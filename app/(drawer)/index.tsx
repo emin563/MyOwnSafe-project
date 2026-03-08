@@ -1,25 +1,60 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  SafeAreaView,
-  Platform,
-  StatusBar,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, DrawerActions } from '@react-navigation/native';
 import { router } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
 import { DocumentCard } from '@/components/document/DocumentCard';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document } from '@/db/types';
 
+// #region agent log
+function sendDebugLog(
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown> = {}
+) {
+  fetch('http://127.0.0.1:7480/ingest/66512b4c-ea2c-44b0-a600-fed3b773abbf', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Debug-Session-Id': '8dfdc1',
+    },
+    body: JSON.stringify({
+      sessionId: '8dfdc1',
+      runId: 'drawer-warning-pre-fix',
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+}
+// #endregion
+
 export default function HomeScreen() {
   const navigation = useNavigation();
   const { documents, categories, selectedCategoryId, searchQuery } = useAppStore();
+
+  useEffect(() => {
+    // #region agent log
+    sendDebugLog('H4', 'app/(drawer)/index.tsx:46', 'home-screen-mounted', {
+      documentsCount: documents.length,
+      categoriesCount: categories.length,
+      selectedCategoryId,
+      searchQueryLength: searchQuery.length,
+    });
+    // #endregion
+  }, []);
 
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
 
@@ -38,7 +73,7 @@ export default function HomeScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={openDrawer} style={styles.menuButton} activeOpacity={0.7}>
           <Ionicons name="menu" size={24} color={Colors.text} />
@@ -112,7 +147,6 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: Colors.background,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
   header: {
     flexDirection: 'row',

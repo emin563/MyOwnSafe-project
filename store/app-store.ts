@@ -12,7 +12,13 @@ import {
   updateDocument,
   deleteDocument,
   searchDocuments,
+  updateDocumentNotificationId,
 } from '@/db/documents';
+import { getSetting, setSetting } from '@/db/settings';
+import {
+  scheduleExpiryNotification,
+  cancelNotification,
+} from '@/services/NotificationService';
 
 type AppStore = {
   categories: Category[];
@@ -21,9 +27,14 @@ type AppStore = {
   searchQuery: string;
   isDbReady: boolean;
 
+  // Security
+  isUnlocked: boolean;
+  biometricEnabled: boolean;
+
   setDbReady: (ready: boolean) => void;
   setSearchQuery: (query: string) => void;
   setSelectedCategoryId: (id: number | null) => void;
+  setUnlocked: (unlocked: boolean) => void;
 
   loadCategories: () => Promise<void>;
   addCategory: (name: string, iconName?: string) => Promise<void>;
@@ -52,6 +63,10 @@ type AppStore = {
   ) => Promise<void>;
   removeDocument: (id: number) => Promise<void>;
   runSearch: (query: string) => Promise<void>;
+
+  // Settings
+  loadSettings: () => Promise<void>;
+  setBiometricEnabled: (enabled: boolean) => Promise<void>;
 };
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -60,10 +75,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
   selectedCategoryId: null,
   searchQuery: '',
   isDbReady: false,
+  isUnlocked: false,
+  biometricEnabled: false,
 
   setDbReady: (ready) => set({ isDbReady: ready }),
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSelectedCategoryId: (id) => set({ selectedCategoryId: id }),
+  setUnlocked: (unlocked) => set({ isUnlocked: unlocked }),
+
+  loadSettings: async () => {
+    const biometric = await getSetting('biometricEnabled');
+    const biometricEnabled = biometric === 'true';
+    // If biometrics is disabled, unlock immediately
+    set({ biometricEnabled, isUnlocked: !biometricEnabled });
+  },
+
+  setBiometricEnabled: async (enabled) => {
+    await setSetting('biometricEnabled', String(enabled));
+    set({ biometricEnabled: enabled });
+    // When disabling, unlock immediately; when enabling, let LockScreen handle it
+    if (!enabled) {
+      set({ isUnlocked: true });
+    }
+  },
 
   loadCategories: async () => {
     const categories = await getCategories();
@@ -97,17 +131,68 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addDocument: async (title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
-    const id = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+    const docId = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+
+    // Schedule expiry notification if date provided
+    if (expiryDate) {
+      try {
+        const notificationId = await scheduleExpiryNotification({
+          id: docId,
+          title,
+          expiry_date: expiryDate,
+        });
+        if (notificationId) {
+          await updateDocumentNotificationId(docId, notificationId);
+        }
+      } catch {
+        // Notification scheduling is non-critical — never block document save
+      }
+    }
+
     await get().loadDocuments();
-    return id;
+    return docId;
   },
 
   editDocument: async (id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+    // Find existing notification_id to cancel the old alert
+    const existing = get().documents.find((d) => d.id === id);
+    if (existing?.notification_id) {
+      try {
+        await cancelNotification(existing.notification_id);
+      } catch {
+        // ignore
+      }
+    }
+
     await updateDocument(id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+
+    // Schedule new notification
+    let newNotificationId: string | null = null;
+    if (expiryDate) {
+      try {
+        newNotificationId = await scheduleExpiryNotification({
+          id,
+          title,
+          expiry_date: expiryDate,
+        });
+      } catch {
+        // non-critical
+      }
+    }
+
+    await updateDocumentNotificationId(id, newNotificationId);
     await get().loadDocuments();
   },
 
   removeDocument: async (id) => {
+    const existing = get().documents.find((d) => d.id === id);
+    if (existing?.notification_id) {
+      try {
+        await cancelNotification(existing.notification_id);
+      } catch {
+        // ignore
+      }
+    }
     await deleteDocument(id);
     await get().loadDocuments();
   },

@@ -14,6 +14,12 @@ export type Document = {
   purchase_price: number | null;
   expiry_date: string | null;
   notes: string | null;
+  notification_id: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type Setting = {
+  key: string;
+  value: string;
 };

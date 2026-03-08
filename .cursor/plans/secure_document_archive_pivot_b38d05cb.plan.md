@@ -1,7 +1,25 @@
 ---
 name: Secure Document Archive Pivot
 overview: Strategic architectural blueprint and transition plan for pivoting the Prompt Library into an offline-first Document, Receipt, and Warranty Archive with zero recurring server costs.
-todos: []
+todos:
+  - id: install-deps
+    content: Install new Expo media and file system dependencies (expo-camera, expo-file-system, expo-image, etc.).
+    status: pending
+  - id: schema-migration
+    content: Write SQLite migration to transition from Prompts to Documents schema and update Zustand store.
+    status: pending
+  - id: storage-service
+    content: Create a StorageService utility using expo-file-system to manage permanent local file saving and deletion.
+    status: pending
+  - id: capture-flow
+    content: Build the Camera capture screen and file import flow.
+    status: pending
+  - id: ui-adaptation
+    content: Adapt the dark-mode UI, Drawer, and Dashboard to display Document categories and image thumbnails.
+    status: pending
+  - id: document-editor
+    content: Build the Document Editor form with fields for URI, Expiry Date, and Purchase Price.
+    status: pending
 isProject: false
 ---
 

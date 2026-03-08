@@ -61,6 +61,20 @@
         {
           "photosPermission": "Vault accesses your photo library to import documents."
         }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Vault uses Face ID to verify your identity and unlock your secure documents."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#10a37f",
+          "defaultChannel": "vault-expiry"
+        }
       ]
     ],
     "experiments": {

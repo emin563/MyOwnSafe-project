@@ -56,6 +56,17 @@ export async function updateDocument(
   );
 }
 
+export async function updateDocumentNotificationId(
+  id: number,
+  notificationId: string | null
+): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    'UPDATE documents SET notification_id = ? WHERE id = ?',
+    [notificationId, id]
+  );
+}
+
 export async function deleteDocument(id: number): Promise<void> {
   const db = await getDb();
   await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);

@@ -5,11 +5,9 @@ import {
   TextInput,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  StatusBar,
   Alert,
   FlatList,
   Modal,
@@ -19,9 +17,11 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, router } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
 import { getDocumentById } from '@/db/documents';
 import { deleteFileFromArchive } from '@/services/StorageService';
+import { exportDocumentAsPdf } from '@/services/PdfService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category } from '@/db/types';
 
@@ -117,6 +117,19 @@ export default function DocumentEditorScreen() {
     }
   };
 
+  const handleExportPdf = async () => {
+    if (!fileUri || isNew) return;
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const doc = await getDocumentById(Number(id));
+      if (!doc) return;
+      const categoryName = categories.find((c) => c.id === doc.category_id)?.name;
+      await exportDocumentAsPdf(doc, categoryName);
+    } catch {
+      Alert.alert('Export Failed', 'Could not generate the PDF. Please try again.');
+    }
+  };
+
   const selectedCategory = categories.find((c) => c.id === categoryId);
 
   if (loading) {
@@ -141,6 +154,11 @@ export default function DocumentEditorScreen() {
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{isNew ? 'New Document' : 'Edit Document'}</Text>
           <View style={styles.headerRight}>
+            {fileUri && !isNew ? (
+              <TouchableOpacity onPress={handleExportPdf} style={styles.headerBtn} activeOpacity={0.7}>
+                <Ionicons name="document-attach-outline" size={20} color={Colors.text} />
+              </TouchableOpacity>
+            ) : null}
             {fileUri ? (
               <TouchableOpacity onPress={handleShare} style={styles.headerBtn} activeOpacity={0.7}>
                 <Ionicons name="share-outline" size={20} color={Colors.text} />
@@ -377,7 +395,6 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: Colors.background,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
   header: {
     flexDirection: 'row',

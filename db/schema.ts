@@ -42,7 +42,19 @@ export async function initDb(): Promise<void> {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (category_id) REFERENCES categories (id) ON DELETE SET NULL
     );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
+
+  // Safe migration: add notification_id column if it does not exist yet
+  try {
+    await database.execAsync('ALTER TABLE documents ADD COLUMN notification_id TEXT;');
+  } catch {
+    // Column already exists from a previous run — silently skip
+  }
 
   // Seed default categories only on first run
   const existing = await database.getAllAsync<{ count: number }>(
