@@ -1,6 +1,5 @@
 import { create } from 'zustand';
-import type { Category } from '@/db/types';
-import type { Prompt } from '@/db/types';
+import type { Category, Document } from '@/db/types';
 import {
   getCategories,
   createCategory,
@@ -8,16 +7,16 @@ import {
   deleteCategory,
 } from '@/db/categories';
 import {
-  getPrompts,
-  createPrompt,
-  updatePrompt,
-  deletePrompt,
-  searchPrompts,
-} from '@/db/prompts';
+  getDocuments,
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  searchDocuments,
+} from '@/db/documents';
 
 type AppStore = {
   categories: Category[];
-  prompts: Prompt[];
+  documents: Document[];
   selectedCategoryId: number | null;
   searchQuery: string;
   isDbReady: boolean;
@@ -27,20 +26,37 @@ type AppStore = {
   setSelectedCategoryId: (id: number | null) => void;
 
   loadCategories: () => Promise<void>;
-  addCategory: (name: string) => Promise<void>;
-  editCategory: (id: number, name: string) => Promise<void>;
+  addCategory: (name: string, iconName?: string) => Promise<void>;
+  editCategory: (id: number, name: string, iconName?: string) => Promise<void>;
   removeCategory: (id: number) => Promise<void>;
 
-  loadPrompts: (categoryId?: number | null) => Promise<void>;
-  addPrompt: (title: string, content: string, categoryId: number | null) => Promise<number>;
-  editPrompt: (id: number, title: string, content: string, categoryId: number | null) => Promise<void>;
-  removePrompt: (id: number) => Promise<void>;
+  loadDocuments: (categoryId?: number | null) => Promise<void>;
+  addDocument: (
+    title: string,
+    fileUri: string,
+    fileType: 'image' | 'pdf',
+    categoryId: number | null,
+    purchasePrice?: number | null,
+    expiryDate?: string | null,
+    notes?: string | null
+  ) => Promise<number>;
+  editDocument: (
+    id: number,
+    title: string,
+    fileUri: string,
+    fileType: 'image' | 'pdf',
+    categoryId: number | null,
+    purchasePrice?: number | null,
+    expiryDate?: string | null,
+    notes?: string | null
+  ) => Promise<void>;
+  removeDocument: (id: number) => Promise<void>;
   runSearch: (query: string) => Promise<void>;
 };
 
 export const useAppStore = create<AppStore>((set, get) => ({
   categories: [],
-  prompts: [],
+  documents: [],
   selectedCategoryId: null,
   searchQuery: '',
   isDbReady: false,
@@ -54,13 +70,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ categories });
   },
 
-  addCategory: async (name) => {
-    await createCategory(name);
+  addCategory: async (name, iconName) => {
+    await createCategory(name, iconName);
     await get().loadCategories();
   },
 
-  editCategory: async (id, name) => {
-    await updateCategory(id, name);
+  editCategory: async (id, name, iconName) => {
+    await updateCategory(id, name, iconName);
     await get().loadCategories();
   },
 
@@ -71,37 +87,37 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ selectedCategoryId: null });
     }
     await get().loadCategories();
-    await get().loadPrompts(get().selectedCategoryId);
+    await get().loadDocuments(get().selectedCategoryId);
   },
 
-  loadPrompts: async (categoryId) => {
+  loadDocuments: async (categoryId) => {
     const id = categoryId !== undefined ? categoryId : get().selectedCategoryId;
-    const prompts = await getPrompts(id);
-    set({ prompts });
+    const documents = await getDocuments(id);
+    set({ documents });
   },
 
-  addPrompt: async (title, content, categoryId) => {
-    const id = await createPrompt(title, content, categoryId);
-    await get().loadPrompts();
+  addDocument: async (title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+    const id = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+    await get().loadDocuments();
     return id;
   },
 
-  editPrompt: async (id, title, content, categoryId) => {
-    await updatePrompt(id, title, content, categoryId);
-    await get().loadPrompts();
+  editDocument: async (id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+    await updateDocument(id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+    await get().loadDocuments();
   },
 
-  removePrompt: async (id) => {
-    await deletePrompt(id);
-    await get().loadPrompts();
+  removeDocument: async (id) => {
+    await deleteDocument(id);
+    await get().loadDocuments();
   },
 
   runSearch: async (query) => {
     if (!query.trim()) {
-      await get().loadPrompts();
+      await get().loadDocuments();
       return;
     }
-    const prompts = await searchPrompts(query);
-    set({ prompts });
+    const documents = await searchDocuments(query);
+    set({ documents });
   },
 }));

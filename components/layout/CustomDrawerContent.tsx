@@ -15,6 +15,19 @@ import { SearchInput, IconButton, InputModal, ConfirmModal } from '@/components/
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category } from '@/db/types';
 
+const CATEGORY_ICONS = [
+  'folder-outline',
+  'receipt-outline',
+  'shield-checkmark-outline',
+  'card-outline',
+  'document-text-outline',
+  'briefcase-outline',
+  'home-outline',
+  'medical-outline',
+  'car-outline',
+  'school-outline',
+];
+
 export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   const {
     categories,
@@ -23,7 +36,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     addCategory,
     editCategory,
     removeCategory,
-    loadPrompts,
+    loadDocuments,
     searchQuery,
     setSearchQuery,
     runSearch,
@@ -41,7 +54,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
 
   const handleSelectCategory = (id: number | null) => {
     setSelectedCategoryId(id);
-    loadPrompts(id);
+    loadDocuments(id);
     router.replace('/(drawer)');
   };
 
@@ -79,7 +92,11 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         activeOpacity={0.7}
       >
         <View style={styles.categoryLeft}>
-          <View style={[styles.categoryDot, isSelected && styles.categoryDotActive]} />
+          <Ionicons
+            name={item.icon_name as any}
+            size={16}
+            color={isSelected ? Colors.primary : Colors.textMuted}
+          />
           <Text
             style={[styles.categoryLabel, isSelected && styles.categoryLabelActive]}
             numberOfLines={1}
@@ -107,26 +124,33 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
 
   return (
     <SafeAreaView style={styles.container}>
+      <View style={styles.brandRow}>
+        <View style={styles.brandIcon}>
+          <Ionicons name="shield-checkmark" size={20} color={Colors.primary} />
+        </View>
+        <Text style={styles.brandName}>Vault</Text>
+      </View>
+
       <View style={styles.header}>
         <SearchInput
-          placeholder="Search prompts..."
+          placeholder="Search documents..."
           value={searchQuery}
           onChangeText={handleSearch}
           containerStyle={styles.search}
         />
-        <IconButton onPress={() => router.push('/prompt/new')} size={40}>
-          <Ionicons name="create-outline" size={18} color={Colors.text} />
+        <IconButton onPress={() => router.push('/capture')} size={40}>
+          <Ionicons name="add" size={20} color={Colors.text} />
         </IconButton>
       </View>
 
       <View style={styles.newButtons}>
         <TouchableOpacity
           style={styles.newButton}
-          onPress={() => router.push('/prompt/new')}
+          onPress={() => router.push('/capture')}
           activeOpacity={0.7}
         >
-          <Ionicons name="add" size={16} color={Colors.textSecondary} />
-          <Text style={styles.newButtonText}>New prompt</Text>
+          <Ionicons name="camera-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.newButtonText}>Scan document</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.newButton}
@@ -141,13 +165,29 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
       <View style={styles.divider} />
 
       <TouchableOpacity
-        style={[styles.allPromptsRow, selectedCategoryId === null && !searchQuery && styles.categoryRowActive]}
+        style={[
+          styles.allDocsRow,
+          selectedCategoryId === null && !searchQuery && styles.categoryRowActive,
+        ]}
         onPress={() => handleSelectCategory(null)}
         activeOpacity={0.7}
       >
-        <Ionicons name="layers-outline" size={16} color={selectedCategoryId === null && !searchQuery ? Colors.primary : Colors.textSecondary} />
-        <Text style={[styles.allPromptsText, selectedCategoryId === null && !searchQuery && styles.categoryLabelActive]}>
-          All Prompts
+        <Ionicons
+          name="layers-outline"
+          size={16}
+          color={
+            selectedCategoryId === null && !searchQuery
+              ? Colors.primary
+              : Colors.textSecondary
+          }
+        />
+        <Text
+          style={[
+            styles.allDocsText,
+            selectedCategoryId === null && !searchQuery && styles.categoryLabelActive,
+          ]}
+        >
+          All Documents
         </Text>
       </TouchableOpacity>
 
@@ -164,7 +204,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
       <InputModal
         visible={addModalVisible}
         title="New Category"
-        placeholder="Category name"
+        placeholder="e.g. Insurance, Medical..."
         confirmLabel="Create"
         onConfirm={handleAddCategory}
         onCancel={() => setAddModalVisible(false)}
@@ -181,7 +221,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
       <ConfirmModal
         visible={deleteModal.visible}
         title="Delete Category"
-        message={`Are you sure you want to delete "${deleteModal.category?.name}"? Prompts in this category will become uncategorized.`}
+        message={`Delete "${deleteModal.category?.name}"? Documents in this category will become uncategorized.`}
         confirmLabel="Delete"
         onConfirm={handleDeleteCategory}
         onCancel={() => setDeleteModal({ visible: false, category: null })}
@@ -195,12 +235,33 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.surface,
   },
-  header: {
+  brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.base,
     paddingTop: Spacing.base,
+    paddingBottom: Spacing.sm,
+  },
+  brandIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.sm,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  brandName: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightBold,
+    letterSpacing: 0.5,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.base,
     paddingBottom: Spacing.sm,
   },
   search: {
@@ -229,7 +290,7 @@ const styles = StyleSheet.create({
     marginHorizontal: Spacing.base,
     marginVertical: Spacing.sm,
   },
-  allPromptsRow: {
+  allDocsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
@@ -239,7 +300,7 @@ const styles = StyleSheet.create({
     marginHorizontal: Spacing.sm,
     marginBottom: Spacing.xs,
   },
-  allPromptsText: {
+  allDocsText: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightMedium,
@@ -265,15 +326,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     flex: 1,
-  },
-  categoryDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.textMuted,
-  },
-  categoryDotActive: {
-    backgroundColor: Colors.primary,
   },
   categoryLabel: {
     color: Colors.textSecondary,

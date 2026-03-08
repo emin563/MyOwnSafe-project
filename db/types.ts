@@ -1,14 +1,19 @@
 export type Category = {
   id: number;
   name: string;
+  icon_name: string;
   created_at: string;
 };
 
-export type Prompt = {
+export type Document = {
   id: number;
   category_id: number | null;
   title: string;
-  content: string;
+  file_uri: string;
+  file_type: 'image' | 'pdf';
+  purchase_price: number | null;
+  expiry_date: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 };

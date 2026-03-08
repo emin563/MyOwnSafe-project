@@ -5,14 +5,14 @@ import { initDb } from '@/db/schema';
 import { useAppStore } from '@/store/app-store';
 
 export default function RootLayout() {
-  const { setDbReady, loadCategories, loadPrompts } = useAppStore();
+  const { setDbReady, loadCategories, loadDocuments } = useAppStore();
 
   useEffect(() => {
     async function bootstrap() {
       await initDb();
       setDbReady(true);
       await loadCategories();
-      await loadPrompts(null);
+      await loadDocuments(null);
     }
     bootstrap();
   }, []);
@@ -29,7 +29,14 @@ export default function RootLayout() {
       >
         <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
         <Stack.Screen
-          name="prompt/[id]"
+          name="document/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen
+          name="capture"
           options={{
             headerShown: false,
             animation: 'slide_from_bottom',

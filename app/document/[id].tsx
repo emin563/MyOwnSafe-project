@@ -14,57 +14,89 @@ import {
   FlatList,
   Modal,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
+import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
-import { getPromptById } from '@/db/prompts';
+import { getDocumentById } from '@/db/documents';
+import { deleteFileFromArchive } from '@/services/StorageService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Prompt } from '@/db/types';
 import type { Category } from '@/db/types';
 
-export default function PromptEditorScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+export default function DocumentEditorScreen() {
+  const { id, fileUri: paramFileUri, fileType: paramFileType } = useLocalSearchParams<{
+    id: string;
+    fileUri?: string;
+    fileType?: string;
+  }>();
   const isNew = id === 'new';
 
-  const { categories, addPrompt, editPrompt, selectedCategoryId } = useAppStore();
+  const { categories, selectedCategoryId, addDocument, editDocument } = useAppStore();
 
   const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
+  const [fileUri, setFileUri] = useState(paramFileUri ?? '');
+  const [fileType, setFileType] = useState<'image' | 'pdf'>(
+    (paramFileType as 'image' | 'pdf') ?? 'image'
+  );
   const [categoryId, setCategoryId] = useState<number | null>(selectedCategoryId);
+  const [purchasePrice, setPurchasePrice] = useState('');
+  const [expiryDate, setExpiryDate] = useState('');
+  const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
 
   useEffect(() => {
     if (!isNew) {
-      loadPrompt();
+      loadDocument();
     }
   }, [id]);
 
-  const loadPrompt = async () => {
-    const prompt = await getPromptById(Number(id));
-    if (prompt) {
-      setTitle(prompt.title);
-      setContent(prompt.content);
-      setCategoryId(prompt.category_id);
+  const loadDocument = async () => {
+    const doc = await getDocumentById(Number(id));
+    if (doc) {
+      setTitle(doc.title);
+      setFileUri(doc.file_uri);
+      setFileType(doc.file_type);
+      setCategoryId(doc.category_id);
+      setPurchasePrice(doc.purchase_price != null ? String(doc.purchase_price) : '');
+      setExpiryDate(doc.expiry_date ?? '');
+      setNotes(doc.notes ?? '');
     }
     setLoading(false);
   };
 
   const handleSave = async () => {
-    if (!title.trim() || !content.trim()) {
-      Alert.alert('Missing Fields', 'Please fill in both title and content.');
+    if (!title.trim()) {
+      Alert.alert('Title Required', 'Please enter a title for this document.');
       return;
     }
+    if (!fileUri) {
+      Alert.alert('No File', 'No file is attached to this document.');
+      return;
+    }
+
+    const price = purchasePrice.trim() ? parseFloat(purchasePrice) : null;
+    if (purchasePrice.trim() && isNaN(price!)) {
+      Alert.alert('Invalid Price', 'Please enter a valid number for the purchase price.');
+      return;
+    }
+
+    const expiry = expiryDate.trim() || null;
+    if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      Alert.alert('Invalid Date', 'Please enter the expiry date in YYYY-MM-DD format.');
+      return;
+    }
+
     setSaving(true);
     try {
       if (isNew) {
-        await addPrompt(title.trim(), content.trim(), categoryId);
+        await addDocument(title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
       } else {
-        await editPrompt(Number(id), title.trim(), content.trim(), categoryId);
+        await editDocument(Number(id), title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.back();
@@ -73,12 +105,16 @@ export default function PromptEditorScreen() {
     }
   };
 
-  const handleCopy = async () => {
-    if (!content.trim()) return;
-    await Clipboard.setStringAsync(content.trim());
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleShare = async () => {
+    if (!fileUri) return;
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await Sharing.shareAsync(fileUri);
+    } catch {
+      // ignore
+    }
   };
 
   const selectedCategory = categories.find((c) => c.id === categoryId);
@@ -103,19 +139,13 @@ export default function PromptEditorScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-down" size={24} color={Colors.text} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{isNew ? 'New Prompt' : 'Edit Prompt'}</Text>
+          <Text style={styles.headerTitle}>{isNew ? 'New Document' : 'Edit Document'}</Text>
           <View style={styles.headerRight}>
-            <TouchableOpacity
-              onPress={handleCopy}
-              style={[styles.headerBtn, copied && styles.headerBtnActive]}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name={copied ? 'checkmark' : 'copy-outline'}
-                size={20}
-                color={copied ? Colors.primary : Colors.text}
-              />
-            </TouchableOpacity>
+            {fileUri ? (
+              <TouchableOpacity onPress={handleShare} style={styles.headerBtn} activeOpacity={0.7}>
+                <Ionicons name="share-outline" size={20} color={Colors.text} />
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
               onPress={handleSave}
               style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
@@ -132,11 +162,42 @@ export default function PromptEditorScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
+          {/* File Preview */}
+          {fileUri ? (
+            <TouchableOpacity
+              style={styles.previewContainer}
+              onPress={() => fileType === 'image' && setPreviewVisible(true)}
+              activeOpacity={fileType === 'image' ? 0.8 : 1}
+            >
+              {fileType === 'image' ? (
+                <Image
+                  source={{ uri: fileUri }}
+                  style={styles.previewImage}
+                  contentFit="contain"
+                  transition={300}
+                />
+              ) : (
+                <View style={styles.pdfPreview}>
+                  <Ionicons name="document-outline" size={48} color={Colors.danger} />
+                  <Text style={styles.pdfPreviewText}>PDF Document</Text>
+                  <Text style={styles.pdfPreviewHint}>Tap share to open</Text>
+                </View>
+              )}
+              {fileType === 'image' && (
+                <View style={styles.previewHintRow}>
+                  <Ionicons name="expand-outline" size={14} color={Colors.textMuted} />
+                  <Text style={styles.previewHint}>Tap to view full size</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          ) : null}
+
+          {/* Title Input */}
           <TextInput
             style={styles.titleInput}
             value={title}
             onChangeText={setTitle}
-            placeholder="Prompt title..."
+            placeholder="Document title..."
             placeholderTextColor={Colors.textMuted}
             selectionColor={Colors.primary}
             autoFocus={isNew}
@@ -144,13 +205,14 @@ export default function PromptEditorScreen() {
 
           <View style={styles.divider} />
 
+          {/* Category Picker */}
           <TouchableOpacity
-            style={styles.categorySelector}
+            style={styles.fieldRow}
             onPress={() => setCategoryPickerVisible(true)}
             activeOpacity={0.7}
           >
-            <Ionicons name="folder-open-outline" size={16} color={Colors.textSecondary} />
-            <Text style={styles.categorySelectorText}>
+            <Ionicons name="folder-open-outline" size={18} color={Colors.textSecondary} />
+            <Text style={[styles.fieldText, selectedCategory && styles.fieldTextActive]}>
               {selectedCategory ? selectedCategory.name : 'Select category (optional)'}
             </Text>
             <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
@@ -158,11 +220,50 @@ export default function PromptEditorScreen() {
 
           <View style={styles.divider} />
 
+          {/* Purchase Price */}
+          <View style={styles.fieldRow}>
+            <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
+            <TextInput
+              style={styles.inlineInput}
+              value={purchasePrice}
+              onChangeText={setPurchasePrice}
+              placeholder="Purchase price (optional)"
+              placeholderTextColor={Colors.textMuted}
+              selectionColor={Colors.primary}
+              keyboardType="decimal-pad"
+            />
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Expiry Date */}
+          <View style={styles.fieldRow}>
+            <Ionicons name="calendar-outline" size={18} color={Colors.textSecondary} />
+            <TextInput
+              style={styles.inlineInput}
+              value={expiryDate}
+              onChangeText={setExpiryDate}
+              placeholder="Expiry date YYYY-MM-DD (optional)"
+              placeholderTextColor={Colors.textMuted}
+              selectionColor={Colors.primary}
+              keyboardType="numbers-and-punctuation"
+              maxLength={10}
+            />
+            {expiryDate.length > 0 && (
+              <TouchableOpacity onPress={() => setExpiryDate('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={styles.divider} />
+
+          {/* Notes */}
           <TextInput
-            style={styles.contentInput}
-            value={content}
-            onChangeText={setContent}
-            placeholder="Write your prompt here..."
+            style={styles.notesInput}
+            value={notes}
+            onChangeText={setNotes}
+            placeholder="Notes, serial number, vendor info..."
             placeholderTextColor={Colors.textMuted}
             selectionColor={Colors.primary}
             multiline
@@ -182,6 +283,24 @@ export default function PromptEditorScreen() {
         }}
         onClose={() => setCategoryPickerVisible(false)}
       />
+
+      {/* Full-screen image preview modal */}
+      <Modal visible={previewVisible} transparent animationType="fade" onRequestClose={() => setPreviewVisible(false)}>
+        <View style={styles.fullPreviewOverlay}>
+          <TouchableOpacity
+            style={styles.fullPreviewClose}
+            onPress={() => setPreviewVisible(false)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="close" size={24} color={Colors.text} />
+          </TouchableOpacity>
+          <Image
+            source={{ uri: fileUri }}
+            style={styles.fullPreviewImage}
+            contentFit="contain"
+          />
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -215,9 +334,7 @@ function CategoryPicker({ visible, categories, selectedId, onSelect, onClose }: 
               <Text style={[pickerStyles.itemText, selectedId === null && pickerStyles.itemTextActive]}>
                 No category
               </Text>
-              {selectedId === null && (
-                <Ionicons name="checkmark" size={18} color={Colors.primary} />
-              )}
+              {selectedId === null && <Ionicons name="checkmark" size={18} color={Colors.primary} />}
             </TouchableOpacity>
             <View style={pickerStyles.divider} />
             <FlatList
@@ -230,7 +347,11 @@ function CategoryPicker({ visible, categories, selectedId, onSelect, onClose }: 
                   onPress={() => onSelect(item)}
                   activeOpacity={0.7}
                 >
-                  <View style={[pickerStyles.dot, selectedId === item.id && pickerStyles.dotActive]} />
+                  <Ionicons
+                    name={item.icon_name as any}
+                    size={18}
+                    color={selectedId === item.id ? Colors.primary : Colors.textSecondary}
+                  />
                   <Text
                     style={[pickerStyles.itemText, selectedId === item.id && pickerStyles.itemTextActive]}
                   >
@@ -270,9 +391,6 @@ const styles = StyleSheet.create({
     padding: Spacing.xs,
     borderRadius: Radius.md,
   },
-  headerBtnActive: {
-    backgroundColor: 'rgba(16, 163, 127, 0.1)',
-  },
   headerTitle: {
     flex: 1,
     color: Colors.text,
@@ -305,6 +423,45 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: Spacing.xxxl,
   },
+  previewContainer: {
+    margin: Spacing.base,
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    backgroundColor: Colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  previewImage: {
+    width: '100%',
+    height: 240,
+  },
+  previewHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.surface,
+  },
+  previewHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+  },
+  pdfPreview: {
+    height: 160,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  pdfPreviewText: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  pdfPreviewHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+  },
   titleInput: {
     color: Colors.text,
     fontSize: Typography.fontSizeXl,
@@ -318,25 +475,36 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.border,
     marginHorizontal: Spacing.base,
   },
-  categorySelector: {
+  fieldRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.base,
     paddingVertical: Spacing.md,
+    minHeight: 52,
   },
-  categorySelectorText: {
+  fieldText: {
     flex: 1,
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeBase,
   },
-  contentInput: {
+  fieldTextActive: {
+    color: Colors.text,
+  },
+  inlineInput: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    paddingVertical: 0,
+  },
+  notesInput: {
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
     lineHeight: Typography.lineHeightBase,
     paddingHorizontal: Spacing.base,
     paddingTop: Spacing.base,
-    minHeight: 300,
+    paddingBottom: Spacing.base,
+    minHeight: 140,
   },
   loadingContainer: {
     flex: 1,
@@ -346,6 +514,28 @@ const styles = StyleSheet.create({
   loadingText: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeBase,
+  },
+  fullPreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullPreviewClose: {
+    position: 'absolute',
+    top: 56,
+    right: Spacing.base,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.surfaceRaised,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  fullPreviewImage: {
+    width: '100%',
+    height: '80%',
   },
 });
 
@@ -398,15 +588,6 @@ const pickerStyles = StyleSheet.create({
   itemTextActive: {
     color: Colors.text,
     fontWeight: Typography.fontWeightMedium,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.textMuted,
-  },
-  dotActive: {
-    backgroundColor: Colors.primary,
   },
   divider: {
     height: 1,

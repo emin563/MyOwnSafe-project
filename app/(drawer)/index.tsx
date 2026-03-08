@@ -13,13 +13,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, DrawerActions } from '@react-navigation/native';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
-import { PromptCard } from '@/components/prompt/PromptCard';
+import { DocumentCard } from '@/components/document/DocumentCard';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Prompt } from '@/db/types';
+import type { Document } from '@/db/types';
 
 export default function HomeScreen() {
   const navigation = useNavigation();
-  const { prompts, categories, selectedCategoryId, searchQuery } = useAppStore();
+  const { documents, categories, selectedCategoryId, searchQuery } = useAppStore();
 
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
 
@@ -27,14 +27,14 @@ export default function HomeScreen() {
     ? `Results for "${searchQuery}"`
     : selectedCategory
     ? selectedCategory.name
-    : 'All Prompts';
+    : 'All Documents';
 
   const openDrawer = () => {
     navigation.dispatch(DrawerActions.openDrawer());
   };
 
-  const renderPrompt = ({ item }: { item: Prompt }) => (
-    <PromptCard prompt={item} />
+  const renderDocument = ({ item }: { item: Document }) => (
+    <DocumentCard document={item} />
   );
 
   return (
@@ -43,11 +43,16 @@ export default function HomeScreen() {
         <TouchableOpacity onPress={openDrawer} style={styles.menuButton} activeOpacity={0.7}>
           <Ionicons name="menu" size={24} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {headerTitle}
-        </Text>
+        <View style={styles.headerCenter}>
+          {selectedCategory && (
+            <Ionicons name={selectedCategory.icon_name as any} size={16} color={Colors.primary} style={styles.headerIcon} />
+          )}
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {headerTitle}
+          </Text>
+        </View>
         <TouchableOpacity
-          onPress={() => router.push('/prompt/new')}
+          onPress={() => router.push('/capture')}
           style={styles.addButton}
           activeOpacity={0.7}
         >
@@ -56,36 +61,48 @@ export default function HomeScreen() {
       </View>
 
       <FlatList
-        data={prompts}
+        data={documents}
         keyExtractor={(item) => String(item.id)}
-        renderItem={renderPrompt}
+        renderItem={renderDocument}
         contentContainerStyle={styles.list}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
-        ListEmptyComponent={<EmptyState />}
+        ListEmptyComponent={<EmptyState searchQuery={searchQuery} />}
       />
     </SafeAreaView>
   );
 }
 
-function EmptyState() {
+function EmptyState({ searchQuery }: { searchQuery: string }) {
+  if (searchQuery) {
+    return (
+      <View style={styles.emptyContainer}>
+        <View style={styles.emptyIcon}>
+          <Ionicons name="search-outline" size={48} color={Colors.textMuted} />
+        </View>
+        <Text style={styles.emptyTitle}>No results found</Text>
+        <Text style={styles.emptySubtitle}>
+          No documents matched "{searchQuery}". Try a different search term.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIcon}>
-        <Ionicons name="document-text-outline" size={48} color={Colors.textMuted} />
+        <Ionicons name="shield-checkmark-outline" size={48} color={Colors.textMuted} />
       </View>
-      <Text style={styles.emptyTitle}>No prompts yet</Text>
+      <Text style={styles.emptyTitle}>No documents yet</Text>
       <Text style={styles.emptySubtitle}>
-        Tap the{' '}
-        <Text style={styles.emptyHighlight}>+</Text>
-        {' '}button to create your first prompt
+        Scan a receipt, warranty, or ID to start building your secure archive.
       </Text>
       <TouchableOpacity
         style={styles.emptyButton}
-        onPress={() => router.push('/prompt/new')}
+        onPress={() => router.push('/capture')}
         activeOpacity={0.7}
       >
-        <Ionicons name="add" size={18} color={Colors.white} />
-        <Text style={styles.emptyButtonText}>New Prompt</Text>
+        <Ionicons name="camera-outline" size={18} color={Colors.white} />
+        <Text style={styles.emptyButtonText}>Scan Document</Text>
       </TouchableOpacity>
     </View>
   );
@@ -108,6 +125,15 @@ const styles = StyleSheet.create({
   menuButton: {
     padding: Spacing.xs,
     marginRight: Spacing.sm,
+  },
+  headerCenter: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  headerIcon: {
+    marginRight: 2,
   },
   headerTitle: {
     flex: 1,
@@ -154,11 +180,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: Spacing.xl,
-  },
-  emptyHighlight: {
-    color: Colors.primary,
-    fontWeight: Typography.fontWeightBold,
-    fontSize: Typography.fontSizeMd,
   },
   emptyButton: {
     flexDirection: 'row',
