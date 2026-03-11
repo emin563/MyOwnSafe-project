@@ -83,6 +83,14 @@ export async function searchDocuments(query: string): Promise<Document[]> {
   );
 }
 
+export async function getTotalFileCount(): Promise<number> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) as count FROM documents'
+  );
+  return row?.count ?? 0;
+}
+
 export async function getDocumentsExpiringSoon(daysAhead: number = 30): Promise<Document[]> {
   const db = await getDb();
   return db.getAllAsync<Document>(

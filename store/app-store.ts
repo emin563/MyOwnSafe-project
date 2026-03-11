@@ -29,7 +29,12 @@ type AppStore = {
 
   // Security
   isUnlocked: boolean;
+  pinEnabled: boolean;
+  pinHash: string | null;
   biometricEnabled: boolean;
+
+  // Pro
+  isPro: boolean;
 
   setDbReady: (ready: boolean) => void;
   setSearchQuery: (query: string) => void;
@@ -66,7 +71,10 @@ type AppStore = {
 
   // Settings
   loadSettings: () => Promise<void>;
+  setPinEnabled: (enabled: boolean, pin?: string) => Promise<void>;
+  verifyPin: (input: string) => boolean;
   setBiometricEnabled: (enabled: boolean) => Promise<void>;
+  setIsPro: (value: boolean) => Promise<void>;
 };
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -76,7 +84,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   searchQuery: '',
   isDbReady: false,
   isUnlocked: false,
+  pinEnabled: false,
+  pinHash: null,
   biometricEnabled: false,
+  isPro: false,
 
   setDbReady: (ready) => set({ isDbReady: ready }),
   setSearchQuery: (query) => set({ searchQuery: query }),
@@ -84,19 +95,45 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setUnlocked: (unlocked) => set({ isUnlocked: unlocked }),
 
   loadSettings: async () => {
-    const biometric = await getSetting('biometricEnabled');
-    const biometricEnabled = biometric === 'true';
-    // If biometrics is disabled, unlock immediately
-    set({ biometricEnabled, isUnlocked: !biometricEnabled });
+    const pinEnabledVal = await getSetting('pinEnabled');
+    const pinHash = await getSetting('pinHash');
+    const biometricVal = await getSetting('biometricEnabled');
+    const proVal = await getSetting('isPro');
+    const pinEnabled = pinEnabledVal === 'true';
+    const biometricEnabled = biometricVal === 'true';
+    const isPro = proVal === 'true';
+    const lockActive = pinEnabled || biometricEnabled;
+    set({ pinEnabled, pinHash, biometricEnabled, isPro, isUnlocked: !lockActive });
+  },
+
+  setPinEnabled: async (enabled, pin) => {
+    if (enabled && pin) {
+      await setSetting('pinHash', pin);
+      await setSetting('pinEnabled', 'true');
+      set({ pinEnabled: true, pinHash: pin, isUnlocked: true });
+    } else {
+      await setSetting('pinEnabled', 'false');
+      await setSetting('pinHash', '');
+      set({ pinEnabled: false, pinHash: null, isUnlocked: true });
+    }
+  },
+
+  verifyPin: (input) => {
+    const { pinHash } = get();
+    return pinHash !== null && input === pinHash;
   },
 
   setBiometricEnabled: async (enabled) => {
     await setSetting('biometricEnabled', String(enabled));
     set({ biometricEnabled: enabled });
-    // When disabling, unlock immediately; when enabling, let LockScreen handle it
     if (!enabled) {
       set({ isUnlocked: true });
     }
+  },
+
+  setIsPro: async (value) => {
+    await setSetting('isPro', String(value));
+    set({ isPro: value });
   },
 
   loadCategories: async () => {

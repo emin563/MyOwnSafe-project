@@ -17,7 +17,11 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { saveFileToArchive } from '@/services/StorageService';
+import { getTotalFileCount } from '@/db/documents';
+import { useAppStore } from '@/store/app-store';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+
+const FREE_FILE_LIMIT = 3;
 
 export default function CaptureScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -33,10 +37,25 @@ export default function CaptureScreen() {
     }
   }, [activeTab, permission?.granted, requestPermission]);
 
+  const checkSlotLimit = async (): Promise<boolean> => {
+    const { isPro } = useAppStore.getState();
+    if (isPro) return true;
+    const totalFiles = await getTotalFileCount();
+    if (totalFiles >= FREE_FILE_LIMIT) {
+      Alert.alert(
+        'Vault Full',
+        'You have reached the 3-file limit. Upgrade to Pro for unlimited storage.'
+      );
+      return false;
+    }
+    return true;
+  };
+
   const handleCapture = async () => {
     if (!cameraRef.current || capturing) {
       return;
     }
+    if (!(await checkSlotLimit())) return;
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -52,6 +71,7 @@ export default function CaptureScreen() {
   };
 
   const handleImportImage = async () => {
+    if (!(await checkSlotLimit())) return;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -68,6 +88,7 @@ export default function CaptureScreen() {
   };
 
   const handleImportPdf = async () => {
+    if (!(await checkSlotLimit())) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',

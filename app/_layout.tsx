@@ -4,6 +4,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { initDb } from '@/db/schema';
 import { useAppStore } from '@/store/app-store';
+import { authFlags } from '@/store/auth-flags';
 import { LockScreen } from '@/components/security/LockScreen';
 import {
   configureNotifications,
@@ -17,11 +18,15 @@ export default function RootLayout() {
     loadDocuments,
     loadSettings,
     isUnlocked,
+    pinEnabled,
     biometricEnabled,
     setUnlocked,
   } = useAppStore();
 
   const appState = useRef<AppStateStatus>(AppState.currentState);
+  // Prevents the AppState listener from firing during the initial bootstrap
+  // sequence before settings have loaded and the lock state is known.
+  const isAppReady = useRef(false);
 
   useEffect(() => {
     async function bootstrap() {
@@ -31,29 +36,42 @@ export default function RootLayout() {
       await loadSettings();
       await loadCategories();
       await loadDocuments(null);
-      // Request notification permissions only when the runtime supports them
       await requestNotificationPermissions();
+      // Open the gate only AFTER settings are loaded so biometricEnabled /
+      // pinEnabled are correct before the listener can act on them.
+      isAppReady.current = true;
     }
     bootstrap();
 
-    // Lock the app whenever it enters the background
     const subscription = AppState.addEventListener('change', (nextState) => {
+      if (!isAppReady.current) {
+        appState.current = nextState;
+        return;
+      }
+
+      if (authFlags.isInCooldown()) {
+        appState.current = nextState;
+        return;
+      }
+
       if (
         appState.current === 'active' &&
         (nextState === 'background' || nextState === 'inactive')
       ) {
-        // Re-lock only when biometric guard is active
-        if (useAppStore.getState().biometricEnabled) {
+        const { pinEnabled: pin, biometricEnabled: bio } = useAppStore.getState();
+        if (pin || bio) {
           setUnlocked(false);
         }
       }
       appState.current = nextState;
     });
 
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
-  const showLock = biometricEnabled && !isUnlocked;
+  const showLock = (pinEnabled || biometricEnabled) && !isUnlocked;
 
   return (
     <>
