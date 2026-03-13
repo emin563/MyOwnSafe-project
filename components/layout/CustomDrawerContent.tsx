@@ -11,9 +11,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
-import { SearchInput, IconButton, InputModal, ConfirmModal } from '@/components/ui';
+import { SearchInput, IconButton, InputModal, ConfirmModal, PaywallModal } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category } from '@/db/types';
+
+const FREE_CATEGORY_LIMIT = 3;
 
 const CATEGORY_ICONS = [
   'folder-outline',
@@ -68,6 +70,8 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     searchQuery,
     setSearchQuery,
     runSearch,
+    isPro,
+    setIsPro,
   } = useAppStore();
 
   const [addModalVisible, setAddModalVisible] = useState(false);
@@ -79,6 +83,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     visible: false,
     category: null,
   });
+  const [paywallVisible, setPaywallVisible] = useState(false);
   const renderCount = useRef(0);
   renderCount.current += 1;
 
@@ -313,12 +318,32 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
             <Text style={styles.newButtonText}>Scan document</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.newButton}
-            onPress={() => setAddModalVisible(true)}
+            style={[
+              styles.newButton,
+              !isPro && categories.length >= FREE_CATEGORY_LIMIT && styles.newButtonDisabled,
+            ]}
+            onPress={() => {
+              if (!isPro && categories.length >= FREE_CATEGORY_LIMIT) {
+                setPaywallVisible(true);
+                return;
+              }
+              setAddModalVisible(true);
+            }}
             activeOpacity={0.7}
           >
-            <Ionicons name="folder-open-outline" size={16} color={Colors.textSecondary} />
-            <Text style={styles.newButtonText}>New category</Text>
+            <Ionicons
+              name="folder-open-outline"
+              size={16}
+              color={!isPro && categories.length >= FREE_CATEGORY_LIMIT ? Colors.textMuted : Colors.textSecondary}
+            />
+            <Text
+              style={[
+                styles.newButtonText,
+                !isPro && categories.length >= FREE_CATEGORY_LIMIT && styles.newButtonTextDisabled,
+              ]}
+            >
+              New category
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -459,6 +484,18 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         onConfirm={handleDeleteCategory}
         onCancel={() => setDeleteModal({ visible: false, category: null })}
       />
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onUpgrade={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+        onRestore={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -519,6 +556,12 @@ const styles = StyleSheet.create({
   newButtonText: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeBase,
+  },
+  newButtonDisabled: {
+    opacity: 0.6,
+  },
+  newButtonTextDisabled: {
+    color: Colors.textMuted,
   },
   divider: {
     height: 1,

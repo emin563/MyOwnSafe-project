@@ -19,6 +19,7 @@ import { router } from 'expo-router';
 import { saveFileToArchive } from '@/services/StorageService';
 import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
+import { PaywallModal } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 
 const FREE_FILE_LIMIT = 3;
@@ -29,6 +30,7 @@ export default function CaptureScreen() {
   const [flash, setFlash] = useState<'off' | 'on'>('off');
   const [capturing, setCapturing] = useState(false);
   const [activeTab, setActiveTab] = useState<'camera' | 'import'>('camera');
+  const [paywallVisible, setPaywallVisible] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   useEffect(() => {
@@ -41,13 +43,7 @@ export default function CaptureScreen() {
     const { isPro } = useAppStore.getState();
     if (isPro) return true;
     const totalFiles = await getTotalFileCount();
-    if (totalFiles >= FREE_FILE_LIMIT) {
-      Alert.alert(
-        'Vault Full',
-        'You have reached the 3-file limit. Upgrade to Pro for unlimited storage.'
-      );
-      return false;
-    }
+    if (totalFiles >= FREE_FILE_LIMIT) return false;
     return true;
   };
 
@@ -55,7 +51,10 @@ export default function CaptureScreen() {
     if (!cameraRef.current || capturing) {
       return;
     }
-    if (!(await checkSlotLimit())) return;
+    if (!(await checkSlotLimit())) {
+      setPaywallVisible(true);
+      return;
+    }
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -71,7 +70,10 @@ export default function CaptureScreen() {
   };
 
   const handleImportImage = async () => {
-    if (!(await checkSlotLimit())) return;
+    if (!(await checkSlotLimit())) {
+      setPaywallVisible(true);
+      return;
+    }
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -88,7 +90,10 @@ export default function CaptureScreen() {
   };
 
   const handleImportPdf = async () => {
-    if (!(await checkSlotLimit())) return;
+    if (!(await checkSlotLimit())) {
+      setPaywallVisible(true);
+      return;
+    }
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
@@ -104,7 +109,8 @@ export default function CaptureScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <>
+      <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
           <Ionicons name="close" size={24} color={Colors.text} />
@@ -156,6 +162,19 @@ export default function CaptureScreen() {
         <ImportTab onImportImage={handleImportImage} onImportPdf={handleImportPdf} />
       )}
     </SafeAreaView>
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onUpgrade={() => {
+          useAppStore.getState().setIsPro(true);
+          setPaywallVisible(false);
+        }}
+        onRestore={() => {
+          useAppStore.getState().setIsPro(true);
+          setPaywallVisible(false);
+        }}
+      />
+    </>
   );
 }
 

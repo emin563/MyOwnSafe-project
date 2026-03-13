@@ -20,6 +20,7 @@ import { useAppStore } from '@/store/app-store';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
 import { cancelAllNotifications } from '@/services/NotificationService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { PaywallModal, QuizWhyPro } from '@/components/ui';
 
 export default function SettingsScreen() {
   const {
@@ -28,10 +29,14 @@ export default function SettingsScreen() {
     loadDocuments,
     loadCategories,
     setUnlocked,
+    setIsPro,
+    isPro,
   } = useAppStore();
 
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const [premiumExpanded, setPremiumExpanded] = useState(false);
+  const [paywallVisible, setPaywallVisible] = useState(false);
 
   // ── Biometric toggle ────────────────────────────────────────────────────
 
@@ -212,20 +217,78 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* App Info Section */}
+        {/* About: Why Pro (quiz) + MyOwnSafe Pro (paywall) */}
         <Text style={styles.sectionTitle}>About</Text>
         <View style={styles.card}>
-          <View style={styles.row}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => setPremiumExpanded((e) => !e)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="help-circle-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Why should I buy Pro</Text>
+              <Text style={styles.rowHint}>
+                {premiumExpanded ? 'Tap to collapse' : 'Answer a few questions'}
+              </Text>
+            </View>
+            <Ionicons
+              name={premiumExpanded ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={Colors.textMuted}
+            />
+          </TouchableOpacity>
+          {premiumExpanded && (
+            <>
+              <View style={styles.divider} />
+              <View style={styles.premiumContent}>
+                <Text style={styles.premiumTitle}>Why go Pro?</Text>
+                <Text style={styles.premiumText}>
+                  Answer a few quick questions to see if unlimited, offline, one-time Pro fits how you
+                  use your vault.
+                </Text>
+              </View>
+              <QuizWhyPro
+                onUpgrade={() => setPaywallVisible(true)}
+                onClose={() => setPremiumExpanded(false)}
+              />
+            </>
+          )}
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => setPaywallVisible(true)}
+            activeOpacity={0.7}
+          >
             <View style={styles.rowIcon}>
               <Ionicons name="shield-checkmark-outline" size={20} color={Colors.primary} />
             </View>
             <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>Vault — Premium</Text>
-              <Text style={styles.rowHint}>Secure Document Archive · Offline First · No Cloud</Text>
+              <Text style={styles.rowLabel}>MyOwnSafe Pro</Text>
+              <Text style={styles.rowHint}>
+                {isPro
+                  ? 'Pro is active · Unlimited files & categories'
+                  : 'Unlock unlimited files & categories (one-time purchase)'}
+              </Text>
             </View>
-          </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
         </View>
       </ScrollView>
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onUpgrade={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+        onRestore={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -321,5 +384,26 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: Colors.border,
     marginHorizontal: Spacing.base,
+  },
+  premiumContent: {
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    paddingBottom: Spacing.lg,
+  },
+  premiumTitle: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.sm,
+  },
+  premiumText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
+    marginBottom: Spacing.sm,
+  },
+  premiumNote: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
   },
 });
