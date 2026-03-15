@@ -4,6 +4,12 @@
     "slug": "PromptBlueprint",
     "version": "1.0.0",
     "orientation": "portrait",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/272a3754-8793-4c10-980a-5e6ae967a076"
+    },
     "icon": "./assets/images/icon.png",
     "scheme": "promptblueprint",
     "userInterfaceStyle": "dark",
@@ -26,8 +32,12 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
-      ]
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ],
+      "package": "com.gundogdu.myownsafe"
     },
     "web": {
       "output": "static",
@@ -78,6 +88,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "272a3754-8793-4c10-980a-5e6ae967a076"
+      }
     }
   }
 }
