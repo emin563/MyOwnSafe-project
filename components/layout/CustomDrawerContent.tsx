@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -30,43 +30,21 @@ const CATEGORY_ICONS = [
   'school-outline',
 ];
 
-// #region agent log
-function sendDebugLog(
-  hypothesisId: string,
-  location: string,
-  message: string,
-  data: Record<string, unknown> = {}
-) {
-  fetch('http://127.0.0.1:7480/ingest/66512b4c-ea2c-44b0-a600-fed3b773abbf', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Debug-Session-Id': '8dfdc1',
-    },
-    body: JSON.stringify({
-      sessionId: '8dfdc1',
-      runId: 'drawer-warning-pre-fix',
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-}
-// #endregion
-
 export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   const insets = useSafeAreaInsets();
   const footerPaddingBottom = Math.max(insets.bottom, 32);
   const {
     categories,
+    tags,
     selectedCategoryId,
+    selectedTagId,
     setSelectedCategoryId,
+    setSelectedTagId,
+    loadDocuments,
+    loadDocumentsByTag,
     addCategory,
     editCategory,
     removeCategory,
-    loadDocuments,
     searchQuery,
     setSearchQuery,
     runSearch,
@@ -84,44 +62,16 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     category: null,
   });
   const [paywallVisible, setPaywallVisible] = useState(false);
-  const renderCount = useRef(0);
-  renderCount.current += 1;
-
-  useEffect(() => {
-    if (renderCount.current <= 8) {
-      // #region agent log
-      sendDebugLog(
-        'H3',
-        'components/layout/CustomDrawerContent.tsx:74',
-        'drawer-render',
-        {
-          renderCount: renderCount.current,
-          categoriesCount: categories.length,
-          selectedCategoryId,
-          searchQueryLength: searchQuery.length,
-          addModalVisible,
-          editModalVisible: editModal.visible,
-          deleteModalVisible: deleteModal.visible,
-          bottomInset: insets.bottom,
-          footerPaddingBottom,
-        }
-      );
-      // #endregion
-    }
-  }, [
-    addModalVisible,
-    categories.length,
-    deleteModal.visible,
-    footerPaddingBottom,
-    editModal.visible,
-    insets.bottom,
-    searchQuery.length,
-    selectedCategoryId,
-  ]);
 
   const handleSelectCategory = (id: number | null) => {
     setSelectedCategoryId(id);
     loadDocuments(id);
+    router.replace('/(drawer)');
+  };
+
+  const handleSelectTag = (tagId: number) => {
+    setSelectedTagId(tagId);
+    loadDocumentsByTag(tagId);
     router.replace('/(drawer)');
   };
 
@@ -155,35 +105,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     return (
       <TouchableOpacity
         style={[styles.categoryRow, isSelected && styles.categoryRowActive]}
-        onPressIn={() => {
-          // #region agent log
-          sendDebugLog(
-            'H2',
-            'components/layout/CustomDrawerContent.tsx:126',
-            'category-row-press-in',
-            {
-              itemId: item.id,
-              isSelected,
-              renderCount: renderCount.current,
-            }
-          );
-          // #endregion
-        }}
-        onPress={() => {
-          // #region agent log
-          sendDebugLog(
-            'H2',
-            'components/layout/CustomDrawerContent.tsx:138',
-            'category-row-press',
-            {
-              itemId: item.id,
-              isSelected,
-              renderCount: renderCount.current,
-            }
-          );
-          // #endregion
-          handleSelectCategory(item.id);
-        }}
+        onPress={() => handleSelectCategory(item.id)}
         activeOpacity={0.7}
       >
         <View style={styles.categoryLeft}>
@@ -201,65 +123,13 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         </View>
         <View style={styles.categoryActions}>
           <TouchableOpacity
-            onPressIn={() => {
-              // #region agent log
-              sendDebugLog(
-                'H2',
-                'components/layout/CustomDrawerContent.tsx:164',
-                'category-edit-press-in',
-                {
-                  itemId: item.id,
-                  renderCount: renderCount.current,
-                }
-              );
-              // #endregion
-            }}
-            onPress={() => {
-              // #region agent log
-              sendDebugLog(
-                'H2',
-                'components/layout/CustomDrawerContent.tsx:176',
-                'category-edit-press',
-                {
-                  itemId: item.id,
-                  renderCount: renderCount.current,
-                }
-              );
-              // #endregion
-              setEditModal({ visible: true, category: item });
-            }}
+            onPress={() => setEditModal({ visible: true, category: item })}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="pencil-outline" size={14} color={Colors.textMuted} />
           </TouchableOpacity>
           <TouchableOpacity
-            onPressIn={() => {
-              // #region agent log
-              sendDebugLog(
-                'H2',
-                'components/layout/CustomDrawerContent.tsx:192',
-                'category-delete-press-in',
-                {
-                  itemId: item.id,
-                  renderCount: renderCount.current,
-                }
-              );
-              // #endregion
-            }}
-            onPress={() => {
-              // #region agent log
-              sendDebugLog(
-                'H2',
-                'components/layout/CustomDrawerContent.tsx:204',
-                'category-delete-press',
-                {
-                  itemId: item.id,
-                  renderCount: renderCount.current,
-                }
-              );
-              // #endregion
-              setDeleteModal({ visible: true, category: item });
-            }}
+            onPress={() => setDeleteModal({ visible: true, category: item })}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="trash-outline" size={14} color={Colors.textMuted} />
@@ -273,20 +143,6 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     <SafeAreaView
       style={styles.container}
       edges={['top']}
-      onLayout={(event) => {
-        // #region agent log
-        sendDebugLog(
-          'H1',
-          'components/layout/CustomDrawerContent.tsx:228',
-          'drawer-layout',
-          {
-            height: event.nativeEvent.layout.height,
-            bottomInset: insets.bottom,
-            footerPaddingBottom,
-          }
-        );
-        // #endregion
-      }}
     >
       <View style={styles.topContent}>
         <View style={styles.brandRow}>
@@ -316,6 +172,14 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           >
             <Ionicons name="camera-outline" size={16} color={Colors.textSecondary} />
             <Text style={styles.newButtonText}>Scan document</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.newButton}
+            onPress={() => router.push({ pathname: '/capture', params: { tab: 'import' } })}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-attach-outline" size={16} color={Colors.textSecondary} />
+            <Text style={styles.newButtonText}>Add file</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[
@@ -352,7 +216,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         <TouchableOpacity
           style={[
             styles.allDocsRow,
-            selectedCategoryId === null && !searchQuery && styles.categoryRowActive,
+            selectedCategoryId === null && selectedTagId === null && !searchQuery && styles.categoryRowActive,
           ]}
           onPress={() => handleSelectCategory(null)}
           activeOpacity={0.7}
@@ -361,7 +225,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
             name="layers-outline"
             size={16}
             color={
-              selectedCategoryId === null && !searchQuery
+              selectedCategoryId === null && selectedTagId === null && !searchQuery
                 ? Colors.primary
                 : Colors.textSecondary
             }
@@ -369,7 +233,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           <Text
             style={[
               styles.allDocsText,
-              selectedCategoryId === null && !searchQuery && styles.categoryLabelActive,
+              selectedCategoryId === null && selectedTagId === null && !searchQuery && styles.categoryLabelActive,
             ]}
           >
             All Documents
@@ -385,73 +249,45 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
             <Text style={styles.emptyText}>No categories yet</Text>
           }
         />
+
+        <View style={styles.divider} />
+        <Text style={styles.sectionLabel}>Tags</Text>
+        {tags.length === 0 ? (
+          <Text style={styles.tagsEmptyText}>No tags yet. Add one from any document.</Text>
+        ) : (
+          tags.map((tag) => (
+              <TouchableOpacity
+                key={tag.id}
+                style={[styles.categoryRow, selectedTagId === tag.id && styles.categoryRowActive]}
+                onPress={() => handleSelectTag(tag.id)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.categoryLeft}>
+                  <Ionicons
+                    name="pricetag-outline"
+                    size={16}
+                    color={selectedTagId === tag.id ? Colors.primary : Colors.textMuted}
+                  />
+                  <Text
+                    style={[styles.categoryLabel, selectedTagId === tag.id && styles.categoryLabelActive]}
+                    numberOfLines={1}
+                  >
+                    {tag.name}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))
+        )}
       </View>
 
       <View
         style={[styles.footer, { paddingBottom: footerPaddingBottom }]}
-        onLayout={(event) => {
-          // #region agent log
-          sendDebugLog(
-            'H1',
-            'components/layout/CustomDrawerContent.tsx:320',
-            'footer-layout',
-            {
-              height: event.nativeEvent.layout.height,
-              bottomInset: insets.bottom,
-              footerPaddingBottom,
-            }
-          );
-          // #endregion
-        }}
       >
         <View style={styles.divider} />
 
         <TouchableOpacity
           style={styles.settingsRow}
-          onLayout={(event) => {
-            // #region agent log
-            sendDebugLog(
-              'H1',
-              'components/layout/CustomDrawerContent.tsx:338',
-              'settings-layout',
-              {
-                y: event.nativeEvent.layout.y,
-                height: event.nativeEvent.layout.height,
-                bottomInset: insets.bottom,
-                footerPaddingBottom,
-              }
-            );
-            // #endregion
-          }}
-          onPressIn={() => {
-            // #region agent log
-            sendDebugLog(
-              'H1',
-              'components/layout/CustomDrawerContent.tsx:351',
-              'settings-press-in',
-              {
-                bottomInset: insets.bottom,
-                footerPaddingBottom,
-                renderCount: renderCount.current,
-              }
-            );
-            // #endregion
-          }}
-          onPress={() => {
-            // #region agent log
-            sendDebugLog(
-              'H1',
-              'components/layout/CustomDrawerContent.tsx:365',
-              'settings-press',
-              {
-                bottomInset: insets.bottom,
-                footerPaddingBottom,
-                renderCount: renderCount.current,
-              }
-            );
-            // #endregion
-            router.push('/settings' as never);
-          }}
+          onPress={() => router.push('/settings' as never)}
           activeOpacity={0.7}
         >
           <Ionicons name="settings-outline" size={16} color={Colors.textMuted} />
@@ -605,6 +441,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     flex: 1,
+  },
+  sectionLabel: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+    marginHorizontal: Spacing.base,
+  },
+  tagsEmptyText: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    marginHorizontal: Spacing.base,
+    marginBottom: Spacing.sm,
   },
   categoryLabel: {
     color: Colors.textSecondary,

@@ -177,3 +177,62 @@ export async function restoreFromBackup(): Promise<boolean> {
 
   return true;
 }
+
+// ─── Share selected documents as zip ───────────────────────────────────────
+
+type SelectedManifestEntry = {
+  id: number;
+  title: string;
+  category_name: string | null;
+  file_name: string;
+};
+
+/**
+ * Zips the given documents (by file_uri) and opens the share sheet.
+ * Uses a simple manifest (id, title, category_name, file_name) and archive/* files.
+ */
+export async function shareSelectedDocuments(
+  documents: Document[],
+  categories: Category[]
+): Promise<void> {
+  if (documents.length === 0) return;
+  const zip = new JSZip();
+  const manifest: SelectedManifestEntry[] = [];
+
+  for (const doc of documents) {
+    const fileName = doc.file_uri.split('/').pop() ?? `doc_${doc.id}`;
+    const categoryName = categories.find((c) => c.id === doc.category_id)?.name ?? null;
+    manifest.push({
+      id: doc.id,
+      title: doc.title,
+      category_name: categoryName,
+      file_name: fileName,
+    });
+    try {
+      const base64Content = await LegacyFS.readAsStringAsync(doc.file_uri, {
+        encoding: LegacyFS.EncodingType.Base64,
+      });
+      zip.file(`archive/${fileName}`, base64Content, { base64: true });
+    } catch {
+      // Skip if file not readable
+    }
+  }
+
+  zip.file('selected_manifest.json', JSON.stringify(manifest, null, 2));
+
+  const zipBase64 = await zip.generateAsync({ type: 'base64' });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const zipPath = `${LegacyFS.cacheDirectory}SelectedDocs_${timestamp}.zip`;
+  await LegacyFS.writeAsStringAsync(zipPath, zipBase64, {
+    encoding: LegacyFS.EncodingType.Base64,
+  });
+
+  const canShare = await Sharing.isAvailableAsync();
+  if (canShare) {
+    await Sharing.shareAsync(zipPath, {
+      mimeType: 'application/zip',
+      UTI: 'public.zip-archive',
+      dialogTitle: 'Share selected documents',
+    });
+  }
+}

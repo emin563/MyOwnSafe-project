@@ -5,12 +5,15 @@ export type Category = {
   created_at: string;
 };
 
+/** Supported vault file types for import and display */
+export type FileType = 'image' | 'pdf' | 'word' | 'excel' | 'document';
+
 export type Document = {
   id: number;
   category_id: number | null;
   title: string;
   file_uri: string;
-  file_type: 'image' | 'pdf';
+  file_type: FileType;
   purchase_price: number | null;
   expiry_date: string | null;
   notes: string | null;
@@ -22,4 +25,10 @@ export type Document = {
 export type Setting = {
   key: string;
   value: string;
+};
+
+export type Tag = {
+  id: number;
+  name: string;
+  created_at: string;
 };

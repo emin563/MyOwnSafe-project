@@ -25,6 +25,10 @@ function buildHtmlTemplate(doc: Document, categoryName: string | undefined, imag
     ? `<div class="pdf-placeholder">
          <p>&#128196; PDF Document (see attached file)</p>
        </div>`
+    : (doc.file_type === 'word' || doc.file_type === 'excel' || doc.file_type === 'document')
+    ? `<div class="pdf-placeholder">
+         <p>&#128196; ${doc.file_type === 'word' ? 'Word' : doc.file_type === 'excel' ? 'Excel' : 'Document'} file (see attached)</p>
+       </div>`
     : '';
 
   return `<!DOCTYPE html>

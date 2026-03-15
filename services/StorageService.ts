@@ -34,6 +34,19 @@ export async function saveFileToArchive(tempUri: string, fileName?: string): Pro
 }
 
 /**
+ * Copies a file within the archive to a new unique name. Returns the new file URI.
+ */
+export async function copyFileInArchive(sourceUri: string, suggestedExt?: string): Promise<string> {
+  const archiveDirectory = ensureArchiveDir();
+  const ext = suggestedExt ?? sourceUri.split('.').pop()?.toLowerCase() ?? 'jpg';
+  const uniqueName = `doc_${Date.now()}.${ext}`;
+  const sourceFile = new File(sourceUri);
+  const destinationFile = new File(archiveDirectory, uniqueName);
+  sourceFile.copy(destinationFile);
+  return destinationFile.uri;
+}
+
+/**
  * Deletes a file from the archive directory by its local URI.
  * Fails silently if the file does not exist.
  */

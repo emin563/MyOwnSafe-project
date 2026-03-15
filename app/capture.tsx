@@ -8,6 +8,7 @@ import {
   StatusBar,
   Alert,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -15,23 +16,36 @@ import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { saveFileToArchive } from '@/services/StorageService';
 import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
+import { authFlags } from '@/store/auth-flags';
+import type { FileType } from '@/db/types';
 import { PaywallModal } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 
 const FREE_FILE_LIMIT = 3;
 
 export default function CaptureScreen() {
+  const { tab: paramTab } = useLocalSearchParams<{ tab?: string }>();
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<'back' | 'front'>('back');
   const [flash, setFlash] = useState<'off' | 'on'>('off');
   const [capturing, setCapturing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'camera' | 'import'>('camera');
+  const [activeTab, setActiveTab] = useState<'camera' | 'import'>(
+    paramTab === 'import' ? 'import' : 'camera'
+  );
   const [paywallVisible, setPaywallVisible] = useState(false);
   const cameraRef = useRef<CameraView>(null);
+
+  // Prevent lock from showing when app goes to background while on this screen (e.g. picker or back).
+  useEffect(() => {
+    authFlags.systemPickerOpen = true;
+    return () => {
+      authFlags.systemPickerOpen = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'camera' && !permission?.granted) {
@@ -70,43 +84,156 @@ export default function CaptureScreen() {
   };
 
   const handleImportImage = async () => {
-    if (!(await checkSlotLimit())) {
-      setPaywallVisible(true);
-      return;
-    }
     try {
+      authFlags.systemPickerOpen = true;
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         quality: 0.9,
         allowsEditing: false,
+        allowsMultipleSelection: true,
       });
-      if (result.canceled || !result.assets[0]) return;
+      if (result.canceled || !result.assets?.length) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const permanentUri = await saveFileToArchive(result.assets[0].uri);
-      router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'image' } });
+      const totalFiles = await getTotalFileCount();
+      const { isPro } = useAppStore.getState();
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      if (!isPro && result.assets.length > slotsLeft) {
+        setPaywallVisible(true);
+        return;
+      }
+      if (result.assets.length === 1) {
+        const permanentUri = await saveFileToArchive(result.assets[0].uri);
+        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'image' } });
+        return;
+      }
+      const bulk: { fileUri: string; fileType: 'image' | 'pdf' }[] = [];
+      for (const asset of result.assets) {
+        const permanentUri = await saveFileToArchive(asset.uri);
+        bulk.push({ fileUri: permanentUri, fileType: 'image' });
+      }
+      useAppStore.getState().setPendingBulkImports(bulk);
+      router.replace('/document/import-review');
     } catch {
-      Alert.alert('Import Failed', 'Could not import the image. Please try again.');
+      Alert.alert('Import Failed', 'Could not import the images. Please try again.');
+    } finally {
+      authFlags.systemPickerOpen = false;
     }
   };
 
   const handleImportPdf = async () => {
-    if (!(await checkSlotLimit())) {
-      setPaywallVisible(true);
-      return;
-    }
     try {
+      authFlags.systemPickerOpen = true;
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
         copyToCacheDirectory: true,
+        multiple: Platform.OS === 'android',
       });
-      if (result.canceled || !result.assets[0]) return;
+      if (result.canceled || !result.assets?.length) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const permanentUri = await saveFileToArchive(result.assets[0].uri, `doc_${Date.now()}.pdf`);
-      router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'pdf' } });
+      const totalFiles = await getTotalFileCount();
+      const { isPro } = useAppStore.getState();
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      if (!isPro && result.assets.length > slotsLeft) {
+        setPaywallVisible(true);
+        return;
+      }
+      if (result.assets.length === 1) {
+        const permanentUri = await saveFileToArchive(result.assets[0].uri, `doc_${Date.now()}.pdf`);
+        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'pdf' } });
+        return;
+      }
+      const bulk: { fileUri: string; fileType: 'image' | 'pdf' }[] = [];
+      for (let i = 0; i < result.assets.length; i++) {
+        const permanentUri = await saveFileToArchive(
+          result.assets[i].uri,
+          `doc_${Date.now()}_${i}.pdf`
+        );
+        bulk.push({ fileUri: permanentUri, fileType: 'pdf' });
+      }
+      useAppStore.getState().setPendingBulkImports(bulk);
+      router.replace('/document/import-review');
     } catch {
-      Alert.alert('Import Failed', 'Could not import the PDF. Please try again.');
+      Alert.alert('Import Failed', 'Could not import the PDF(s). Please try again.');
+    } finally {
+      authFlags.systemPickerOpen = false;
     }
   };
+
+  const handleImportDocuments = async (
+    pickerType: string | string[],
+    fileType: FileType,
+    defaultExt: string
+  ) => {
+    try {
+      authFlags.systemPickerOpen = true;
+      const result = await DocumentPicker.getDocumentAsync({
+        type: pickerType,
+        copyToCacheDirectory: true,
+        multiple: Platform.OS === 'android',
+      });
+      if (result.canceled || !result.assets?.length) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const totalFiles = await getTotalFileCount();
+      const { isPro } = useAppStore.getState();
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      if (!isPro && result.assets.length > slotsLeft) {
+        setPaywallVisible(true);
+        return;
+      }
+      const getFileName = (uri: string, name?: string, i?: number) => {
+        const ext = name?.split('.').pop()?.toLowerCase() || defaultExt;
+        return name && /\.(docx?|xlsx?|txt|csv)$/i.test(name) ? name : `doc_${Date.now()}${i !== undefined ? `_${i}` : ''}.${ext}`;
+      };
+      if (result.assets.length === 1) {
+        const asset = result.assets[0];
+        const permanentUri = await saveFileToArchive(asset.uri, getFileName(asset.uri, asset.name));
+        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType } });
+        return;
+      }
+      const bulk: { fileUri: string; fileType: FileType }[] = [];
+      for (let i = 0; i < result.assets.length; i++) {
+        const asset = result.assets[i];
+        const permanentUri = await saveFileToArchive(
+          asset.uri,
+          getFileName(asset.uri, asset.name, i)
+        );
+        bulk.push({ fileUri: permanentUri, fileType });
+      }
+      useAppStore.getState().setPendingBulkImports(bulk);
+      router.replace('/document/import-review');
+    } catch {
+      Alert.alert('Import Failed', 'Could not import the file(s). Please try again.');
+    } finally {
+      authFlags.systemPickerOpen = false;
+    }
+  };
+
+  const handleImportWord = () =>
+    handleImportDocuments(
+      [
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      ],
+      'word',
+      'docx'
+    );
+
+  const handleImportExcel = () =>
+    handleImportDocuments(
+      [
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ],
+      'excel',
+      'xlsx'
+    );
+
+  const handleImportOther = () =>
+    handleImportDocuments(
+      ['text/plain', 'text/csv', 'application/csv'],
+      'document',
+      'txt'
+    );
 
   return (
     <>
@@ -159,7 +286,13 @@ export default function CaptureScreen() {
           onToggleFlash={() => setFlash((f) => (f === 'off' ? 'on' : 'off'))}
         />
       ) : (
-        <ImportTab onImportImage={handleImportImage} onImportPdf={handleImportPdf} />
+        <ImportTab
+          onImportImage={handleImportImage}
+          onImportPdf={handleImportPdf}
+          onImportWord={handleImportWord}
+          onImportExcel={handleImportExcel}
+          onImportOther={handleImportOther}
+        />
       )}
     </SafeAreaView>
       <PaywallModal
@@ -273,14 +406,28 @@ function CameraTab({
 type ImportTabProps = {
   onImportImage: () => void;
   onImportPdf: () => void;
+  onImportWord: () => void;
+  onImportExcel: () => void;
+  onImportOther: () => void;
 };
 
-function ImportTab({ onImportImage, onImportPdf }: ImportTabProps) {
+function ImportTab({
+  onImportImage,
+  onImportPdf,
+  onImportWord,
+  onImportExcel,
+  onImportOther,
+}: ImportTabProps) {
   return (
-    <View style={styles.importContainer}>
+    <ScrollView
+      style={styles.importScroll}
+      contentContainerStyle={styles.importScrollContent}
+      showsVerticalScrollIndicator={true}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.importTitle}>Import from Device</Text>
       <Text style={styles.importSubtitle}>
-        Select an existing photo or PDF from your device storage.
+        Select a photo, document, or file from your device storage.
       </Text>
 
       <TouchableOpacity style={styles.importCard} onPress={onImportImage} activeOpacity={0.7}>
@@ -304,7 +451,40 @@ function ImportTab({ onImportImage, onImportPdf }: ImportTabProps) {
         </View>
         <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
       </TouchableOpacity>
-    </View>
+
+      <TouchableOpacity style={styles.importCard} onPress={onImportWord} activeOpacity={0.7}>
+        <View style={[styles.importIcon, styles.importIconWord]}>
+          <Ionicons name="document-text-outline" size={32} color="#2b579a" />
+        </View>
+        <View style={styles.importCardText}>
+          <Text style={styles.importCardTitle}>Word Document</Text>
+          <Text style={styles.importCardSubtitle}>DOC, DOCX from your device</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.importCard} onPress={onImportExcel} activeOpacity={0.7}>
+        <View style={[styles.importIcon, styles.importIconExcel]}>
+          <Ionicons name="grid-outline" size={32} color="#217346" />
+        </View>
+        <View style={styles.importCardText}>
+          <Text style={styles.importCardTitle}>Excel Spreadsheet</Text>
+          <Text style={styles.importCardSubtitle}>XLS, XLSX from your device</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.importCard} onPress={onImportOther} activeOpacity={0.7}>
+        <View style={[styles.importIcon, styles.importIconOther]}>
+          <Ionicons name="document-attach-outline" size={32} color={Colors.textSecondary} />
+        </View>
+        <View style={styles.importCardText}>
+          <Text style={styles.importCardTitle}>Other (Text, CSV)</Text>
+          <Text style={styles.importCardSubtitle}>TXT, CSV and other documents</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+      </TouchableOpacity>
+    </ScrollView>
   );
 }
 
@@ -456,10 +636,13 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.base,
     backgroundColor: Colors.background,
   },
-  importContainer: {
+  importScroll: {
     flex: 1,
+  },
+  importScrollContent: {
     padding: Spacing.base,
     paddingTop: Spacing.xl,
+    paddingBottom: Spacing.xxxl + 60,
   },
   importTitle: {
     color: Colors.text,
@@ -494,6 +677,15 @@ const styles = StyleSheet.create({
   },
   importIconPdf: {
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
+  importIconWord: {
+    backgroundColor: 'rgba(43, 87, 154, 0.12)',
+  },
+  importIconExcel: {
+    backgroundColor: 'rgba(33, 115, 70, 0.12)',
+  },
+  importIconOther: {
+    backgroundColor: Colors.surfaceHighlight,
   },
   importCardText: {
     flex: 1,

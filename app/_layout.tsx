@@ -16,6 +16,7 @@ export default function RootLayout() {
     setDbReady,
     loadCategories,
     loadDocuments,
+    loadTags,
     loadSettings,
     isUnlocked,
     pinEnabled,
@@ -36,6 +37,7 @@ export default function RootLayout() {
       await loadSettings();
       await loadCategories();
       await loadDocuments(null);
+      await loadTags();
       await requestNotificationPermissions();
       // Open the gate only AFTER settings are loaded so biometricEnabled /
       // pinEnabled are correct before the listener can act on them.
@@ -54,10 +56,18 @@ export default function RootLayout() {
         return;
       }
 
-      if (
-        appState.current === 'active' &&
-        (nextState === 'background' || nextState === 'inactive')
-      ) {
+      // When returning to active, clear "picker open" so next background transition can lock.
+      if (nextState === 'active') {
+        authFlags.systemPickerOpen = false;
+      }
+
+      // Only lock when the app goes to background (user left the app).
+      // Do not lock if a system picker we opened caused the background (e.g. document/image picker on Android).
+      if (appState.current === 'active' && nextState === 'background') {
+        if (authFlags.systemPickerOpen) {
+          appState.current = nextState;
+          return;
+        }
         const { pinEnabled: pin, biometricEnabled: bio } = useAppStore.getState();
         if (pin || bio) {
           setUnlocked(false);
@@ -86,6 +96,13 @@ export default function RootLayout() {
         <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
         <Stack.Screen
           name="document/[id]"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen
+          name="document/import-review"
           options={{
             headerShown: false,
             animation: 'slide_from_bottom',

@@ -1,5 +1,5 @@
 import { getDb } from './schema';
-import type { Document } from './types';
+import type { Document, FileType } from './types';
 
 export async function getDocuments(categoryId?: number | null): Promise<Document[]> {
   const db = await getDb();
@@ -20,7 +20,7 @@ export async function getDocumentById(id: number): Promise<Document | null> {
 export async function createDocument(
   title: string,
   fileUri: string,
-  fileType: 'image' | 'pdf',
+  fileType: FileType,
   categoryId: number | null,
   purchasePrice?: number | null,
   expiryDate?: string | null,
@@ -39,7 +39,7 @@ export async function updateDocument(
   id: number,
   title: string,
   fileUri: string,
-  fileType: 'image' | 'pdf',
+  fileType: FileType,
   categoryId: number | null,
   purchasePrice?: number | null,
   expiryDate?: string | null,
@@ -76,10 +76,12 @@ export async function searchDocuments(query: string): Promise<Document[]> {
   const db = await getDb();
   const like = `%${query}%`;
   return db.getAllAsync<Document>(
-    `SELECT * FROM documents
-     WHERE title LIKE ? OR notes LIKE ?
-     ORDER BY updated_at DESC`,
-    [like, like]
+    `SELECT DISTINCT d.* FROM documents d
+     LEFT JOIN document_tags dt ON dt.document_id = d.id
+     LEFT JOIN tags t ON t.id = dt.tag_id
+     WHERE d.title LIKE ? OR d.notes LIKE ? OR t.name LIKE ?
+     ORDER BY d.updated_at DESC`,
+    [like, like, like]
   );
 }
 

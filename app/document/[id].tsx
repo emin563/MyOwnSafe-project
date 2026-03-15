@@ -20,10 +20,11 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
 import { getDocumentById } from '@/db/documents';
+import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { exportDocumentAsPdf } from '@/services/PdfService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Category } from '@/db/types';
+import type { Category, FileType, Tag } from '@/db/types';
 
 export default function DocumentEditorScreen() {
   const { id, fileUri: paramFileUri, fileType: paramFileType } = useLocalSearchParams<{
@@ -33,12 +34,24 @@ export default function DocumentEditorScreen() {
   }>();
   const isNew = id === 'new';
 
-  const { categories, selectedCategoryId, addDocument, editDocument } = useAppStore();
+  const {
+    categories,
+    tags: allTags,
+    loadTags,
+    selectedCategoryId,
+    addDocument,
+    editDocument,
+    removeDocument,
+    duplicateDocument,
+    tagDocument,
+    untagDocument,
+    getOrCreateTag,
+  } = useAppStore();
 
   const [title, setTitle] = useState('');
   const [fileUri, setFileUri] = useState(paramFileUri ?? '');
-  const [fileType, setFileType] = useState<'image' | 'pdf'>(
-    (paramFileType as 'image' | 'pdf') ?? 'image'
+  const [fileType, setFileType] = useState<FileType>(
+    (paramFileType as FileType) ?? 'image'
   );
   const [categoryId, setCategoryId] = useState<number | null>(selectedCategoryId);
   const [purchasePrice, setPurchasePrice] = useState('');
@@ -48,6 +61,10 @@ export default function DocumentEditorScreen() {
   const [saving, setSaving] = useState(false);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
+  const [documentTags, setDocumentTags] = useState<Tag[]>([]);
+  const [tagPickerVisible, setTagPickerVisible] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [duplicating, setDuplicating] = useState(false);
 
   useEffect(() => {
     if (!isNew) {
@@ -65,6 +82,8 @@ export default function DocumentEditorScreen() {
       setPurchasePrice(doc.purchase_price != null ? String(doc.purchase_price) : '');
       setExpiryDate(doc.expiry_date ?? '');
       setNotes(doc.notes ?? '');
+      const docTags = await getTagsForDocument(doc.id);
+      setDocumentTags(docTags);
     }
     setLoading(false);
   };
@@ -117,6 +136,70 @@ export default function DocumentEditorScreen() {
     }
   };
 
+  const handleOpenIn = async () => {
+    if (!fileUri) return;
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await Sharing.shareAsync(fileUri, { dialogTitle: 'Open with...' });
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveToDevice = async () => {
+    if (!fileUri) return;
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await Sharing.shareAsync(fileUri, { dialogTitle: 'Save to device' });
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDelete = () => {
+    if (isNew) return;
+    Alert.alert(
+      'Delete Document',
+      'This document will be permanently removed from your vault.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteFileFromArchive(fileUri);
+              await removeDocument(Number(id));
+              await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              router.back();
+            } catch {
+              Alert.alert('Error', 'Could not delete the document.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDuplicate = async () => {
+    if (isNew || duplicating) return;
+    setDuplicating(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const newId = await duplicateDocument(Number(id));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace(`/document/${newId}`);
+    } catch {
+      Alert.alert('Error', 'Could not duplicate the document.');
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
   const handleExportPdf = async () => {
     if (!fileUri || isNew) return;
     try {
@@ -154,15 +237,33 @@ export default function DocumentEditorScreen() {
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{isNew ? 'New Document' : 'Edit Document'}</Text>
           <View style={styles.headerRight}>
+            {!isNew && (
+              <TouchableOpacity
+                onPress={() => setCategoryPickerVisible(true)}
+                style={styles.headerBtn}
+                activeOpacity={0.7}
+                accessibilityLabel="Move to category"
+              >
+                <Ionicons name="folder-open-outline" size={20} color={Colors.text} />
+              </TouchableOpacity>
+            )}
             {fileUri && !isNew ? (
               <TouchableOpacity onPress={handleExportPdf} style={styles.headerBtn} activeOpacity={0.7}>
                 <Ionicons name="document-attach-outline" size={20} color={Colors.text} />
               </TouchableOpacity>
             ) : null}
             {fileUri ? (
-              <TouchableOpacity onPress={handleShare} style={styles.headerBtn} activeOpacity={0.7}>
-                <Ionicons name="share-outline" size={20} color={Colors.text} />
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity onPress={handleOpenIn} style={styles.headerBtn} activeOpacity={0.7}>
+                  <Ionicons name="open-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleSaveToDevice} style={styles.headerBtn} activeOpacity={0.7}>
+                  <Ionicons name="download-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleShare} style={styles.headerBtn} activeOpacity={0.7}>
+                  <Ionicons name="share-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
+              </>
             ) : null}
             <TouchableOpacity
               onPress={handleSave}
@@ -196,9 +297,35 @@ export default function DocumentEditorScreen() {
                 />
               ) : (
                 <View style={styles.pdfPreview}>
-                  <Ionicons name="document-outline" size={48} color={Colors.danger} />
-                  <Text style={styles.pdfPreviewText}>PDF Document</Text>
-                  <Text style={styles.pdfPreviewHint}>Tap share to open</Text>
+                  <Ionicons
+                    name={
+                      fileType === 'word'
+                        ? 'document-text-outline'
+                        : fileType === 'excel'
+                          ? 'grid-outline'
+                          : 'document-outline'
+                    }
+                    size={48}
+                    color={
+                      fileType === 'word'
+                        ? '#2b579a'
+                        : fileType === 'excel'
+                          ? '#217346'
+                          : fileType === 'document'
+                            ? Colors.textMuted
+                            : Colors.danger
+                    }
+                  />
+                  <Text style={styles.pdfPreviewText}>
+                    {fileType === 'word'
+                      ? 'Word Document'
+                      : fileType === 'excel'
+                        ? 'Excel Spreadsheet'
+                        : fileType === 'document'
+                          ? 'Document'
+                          : 'PDF Document'}
+                  </Text>
+                  <Text style={styles.pdfPreviewHint}>Tap share or Open in to view</Text>
                 </View>
               )}
               {fileType === 'image' && (
@@ -235,6 +362,51 @@ export default function DocumentEditorScreen() {
             </Text>
             <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
           </TouchableOpacity>
+
+          <View style={styles.divider} />
+
+          {/* Tags */}
+          <View style={styles.tagsSection}>
+            <View style={styles.fieldRow}>
+              <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
+              <Text style={styles.fieldText}>Tags</Text>
+              {!isNew && (
+                <TouchableOpacity
+                  style={styles.addTagBtn}
+                  onPress={() => {
+                    setTagPickerVisible(true);
+                    setNewTagName('');
+                    loadTags();
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="add" size={16} color={Colors.primary} />
+                  <Text style={styles.addTagBtnText}>Add tag</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            {documentTags.length > 0 && (
+              <View style={styles.tagChipsRow}>
+                {documentTags.map((tag) => (
+                  <View key={tag.id} style={styles.tagChip}>
+                    <Text style={styles.tagChipText} numberOfLines={1}>{tag.name}</Text>
+                    {!isNew && (
+                      <TouchableOpacity
+                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        onPress={async () => {
+                          await untagDocument(Number(id), tag.id);
+                          const updated = await getTagsForDocument(Number(id));
+                          setDocumentTags(updated);
+                        }}
+                      >
+                        <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
 
           <View style={styles.divider} />
 
@@ -288,6 +460,29 @@ export default function DocumentEditorScreen() {
             textAlignVertical="top"
             scrollEnabled={false}
           />
+
+          {!isNew && (
+            <>
+              <View style={styles.divider} />
+              <TouchableOpacity
+                style={styles.duplicateBtn}
+                onPress={handleDuplicate}
+                disabled={duplicating}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="copy-outline" size={20} color={Colors.primary} />
+                <Text style={styles.duplicateBtnText}>{duplicating ? 'Duplicating…' : 'Duplicate document'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                onPress={handleDelete}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                <Text style={styles.deleteBtnText}>Delete document</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -301,6 +496,68 @@ export default function DocumentEditorScreen() {
         }}
         onClose={() => setCategoryPickerVisible(false)}
       />
+
+      <Modal visible={tagPickerVisible} transparent animationType="slide" onRequestClose={() => setTagPickerVisible(false)}>
+        <TouchableOpacity
+          style={pickerStyles.overlay}
+          onPress={() => setTagPickerVisible(false)}
+          activeOpacity={1}
+        >
+          <View style={pickerStyles.sheet}>
+            <View style={pickerStyles.handle} />
+            <Text style={pickerStyles.title}>Add tag</Text>
+            <TextInput
+              style={pickerStyles.input}
+              value={newTagName}
+              onChangeText={setNewTagName}
+              placeholder="Create new tag..."
+              placeholderTextColor={Colors.textMuted}
+              selectionColor={Colors.primary}
+              onSubmitEditing={async () => {
+                const trimmed = newTagName.trim();
+                if (!trimmed || isNew) return;
+                try {
+                  const tagId = await getOrCreateTag(trimmed);
+                  await tagDocument(Number(id), tagId);
+                  const updated = await getTagsForDocument(Number(id));
+                  setDocumentTags(updated);
+                  setTagPickerVisible(false);
+                  setNewTagName('');
+                  await loadTags();
+                } catch {
+                  // ignore
+                }
+              }}
+            />
+            <FlatList
+              data={allTags.filter((t) => !documentTags.some((dt) => dt.id === t.id))}
+              keyExtractor={(item) => String(item.id)}
+              style={pickerStyles.list}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={pickerStyles.item}
+                  onPress={async () => {
+                    if (isNew) return;
+                    await tagDocument(Number(id), item.id);
+                    const updated = await getTagsForDocument(Number(id));
+                    setDocumentTags(updated);
+                    setTagPickerVisible(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
+                  <Text style={pickerStyles.itemText}>{item.name}</Text>
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <Text style={pickerStyles.emptyText}>
+                  {newTagName.trim() ? 'Press Enter to create tag' : 'No other tags. Create one above.'}
+                </Text>
+              }
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Full-screen image preview modal */}
       <Modal visible={previewVisible} transparent animationType="fade" onRequestClose={() => setPreviewVisible(false)}>
@@ -523,6 +780,81 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.base,
     minHeight: 140,
   },
+  tagsSection: {
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+  },
+  addTagBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+  },
+  addTagBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  tagChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  tagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.surfaceHighlight,
+    borderRadius: Radius.pill,
+    paddingLeft: Spacing.sm,
+    paddingVertical: 4,
+    paddingRight: 4,
+  },
+  tagChipText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    maxWidth: 120,
+  },
+  duplicateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.base,
+    marginHorizontal: Spacing.base,
+    marginTop: Spacing.lg,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: 'transparent',
+  },
+  duplicateBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.base,
+    marginHorizontal: Spacing.base,
+    marginTop: Spacing.sm,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    backgroundColor: 'transparent',
+  },
+  deleteBtnText: {
+    color: Colors.danger,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
   loadingContainer: {
     flex: 1,
     alignItems: 'center',
@@ -584,6 +916,16 @@ const pickerStyles = StyleSheet.create({
     color: Colors.text,
     fontSize: Typography.fontSizeMd,
     fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.md,
+  },
+  input: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
     marginBottom: Spacing.md,
   },
   item: {

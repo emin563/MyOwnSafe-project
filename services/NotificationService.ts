@@ -6,45 +6,8 @@ const DAYS_BEFORE_EXPIRY = 7;
 const NOTIFICATIONS_SUPPORTED =
   Constants.executionEnvironment !== ExecutionEnvironment.StoreClient;
 
-// #region agent log
-function sendDebugLog(
-  hypothesisId: string,
-  location: string,
-  message: string,
-  data: Record<string, unknown> = {}
-) {
-  fetch('http://127.0.0.1:7480/ingest/66512b4c-ea2c-44b0-a600-fed3b773abbf', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Debug-Session-Id': '8dfdc1',
-    },
-    body: JSON.stringify({
-      sessionId: '8dfdc1',
-      runId: 'notifications-expo-go-fix',
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-}
-// #endregion
-
 async function getNotificationsModule() {
   if (!NOTIFICATIONS_SUPPORTED) {
-    // #region agent log
-    sendDebugLog(
-      'N1',
-      'services/NotificationService.ts:31',
-      'notifications-module-skipped',
-      {
-        executionEnvironment: Constants.executionEnvironment,
-        supported: NOTIFICATIONS_SUPPORTED,
-      }
-    );
-    // #endregion
     return null;
   }
 
@@ -56,17 +19,6 @@ export async function configureNotifications(): Promise<void> {
   if (!Notifications) {
     return;
   }
-
-  // #region agent log
-  sendDebugLog(
-    'N2',
-    'services/NotificationService.ts:53',
-    'notifications-handler-configured',
-    {
-      executionEnvironment: Constants.executionEnvironment,
-    }
-  );
-  // #endregion
 
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -88,17 +40,6 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   if (!Notifications) {
     return false;
   }
-
-  // #region agent log
-  sendDebugLog(
-    'N3',
-    'services/NotificationService.ts:77',
-    'notifications-permission-requested',
-    {
-      executionEnvironment: Constants.executionEnvironment,
-    }
-  );
-  // #endregion
 
   const { status } = await Notifications.requestPermissionsAsync();
   return status === 'granted';
