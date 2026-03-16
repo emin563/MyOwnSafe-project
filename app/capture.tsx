@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -22,7 +23,7 @@ import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import type { FileType } from '@/db/types';
-import { PaywallModal } from '@/components/ui';
+import { PaywallModal, QuizWhyPro } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 
 const FREE_FILE_LIMIT = 3;
@@ -37,6 +38,8 @@ export default function CaptureScreen() {
     paramTab === 'import' ? 'import' : 'camera'
   );
   const [paywallVisible, setPaywallVisible] = useState(false);
+  const [limitVisible, setLimitVisible] = useState(false);
+  const [showWhyPro, setShowWhyPro] = useState(false);
   const cameraRef = useRef<CameraView>(null);
 
   // Prevent lock from showing when app goes to background while on this screen (e.g. picker or back).
@@ -57,7 +60,11 @@ export default function CaptureScreen() {
     const { isPro } = useAppStore.getState();
     if (isPro) return true;
     const totalFiles = await getTotalFileCount();
-    if (totalFiles >= FREE_FILE_LIMIT) return false;
+    if (totalFiles >= FREE_FILE_LIMIT) {
+      setLimitVisible(true);
+      setShowWhyPro(false);
+      return false;
+    }
     return true;
   };
 
@@ -66,7 +73,6 @@ export default function CaptureScreen() {
       return;
     }
     if (!(await checkSlotLimit())) {
-      setPaywallVisible(true);
       return;
     }
     setCapturing(true);
@@ -98,7 +104,8 @@ export default function CaptureScreen() {
       const { isPro } = useAppStore.getState();
       const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
-        setPaywallVisible(true);
+        setLimitVisible(true);
+        setShowWhyPro(false);
         return;
       }
       if (result.assets.length === 1) {
@@ -134,7 +141,8 @@ export default function CaptureScreen() {
       const { isPro } = useAppStore.getState();
       const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
-        setPaywallVisible(true);
+        setLimitVisible(true);
+        setShowWhyPro(false);
         return;
       }
       if (result.assets.length === 1) {
@@ -177,7 +185,8 @@ export default function CaptureScreen() {
       const { isPro } = useAppStore.getState();
       const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
-        setPaywallVisible(true);
+        setLimitVisible(true);
+        setShowWhyPro(false);
         return;
       }
       const getFileName = (uri: string, name?: string, i?: number) => {
@@ -295,6 +304,81 @@ export default function CaptureScreen() {
         />
       )}
     </SafeAreaView>
+      <Modal
+        visible={limitVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setLimitVisible(false);
+          setShowWhyPro(false);
+        }}
+      >
+        <View style={styles.limitOverlay}>
+          <View style={styles.limitCard}>
+            <Text style={styles.limitTitle}>Limit reached</Text>
+            <Text style={styles.limitBody}>
+              You&apos;ve reached the free limit for stored documents.
+            </Text>
+            <Text style={styles.limitBodySecondary}>
+              You can free up space or upgrade to Pro to keep adding documents.
+            </Text>
+
+            <View style={styles.limitButtons}>
+              <TouchableOpacity
+                style={styles.limitPrimaryBtn}
+                onPress={() => {
+                  setLimitVisible(false);
+                  setShowWhyPro(false);
+                  setPaywallVisible(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.limitPrimaryText}>Get Pro – one-time payment</Text>
+              </TouchableOpacity>
+              <Text style={styles.limitTangible}>About the price of a lunch — one-time, no subscription.</Text>
+
+              <TouchableOpacity
+                style={styles.limitSecondaryBtn}
+                onPress={() => {
+                  setLimitVisible(false);
+                  setShowWhyPro(false);
+                  router.replace('/(drawer)');
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.limitSecondaryText}>Delete files / Manage storage</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.limitTertiaryBtn}
+                onPress={() => setShowWhyPro(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.limitTertiaryText}>Why should I get Pro?</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={showWhyPro}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowWhyPro(false)}
+      >
+        <View style={styles.limitOverlay}>
+          <View style={styles.quizWhyProWrap}>
+            <QuizWhyPro
+              onUpgrade={() => {
+                setShowWhyPro(false);
+                setLimitVisible(false);
+                setPaywallVisible(true);
+              }}
+              onClose={() => setShowWhyPro(false)}
+            />
+          </View>
+        </View>
+      </Modal>
       <PaywallModal
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
@@ -699,5 +783,88 @@ const styles = StyleSheet.create({
   importCardSubtitle: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
+  },
+  limitOverlay: {
+    flex: 1,
+    backgroundColor: Colors.overlay,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.base,
+  },
+  limitCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceRaised,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  limitTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeLg,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
+  },
+  limitBody: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+    textAlign: 'center',
+    marginBottom: Spacing.xs,
+  },
+  limitBodySecondary: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  limitButtons: {
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  limitPrimaryBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.sm + 4,
+    alignItems: 'center',
+  },
+  limitPrimaryText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  limitSecondaryBtn: {
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.sm + 2,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  limitSecondaryText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+  },
+  limitTertiaryBtn: {
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  limitTertiaryText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  limitTangible: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    textAlign: 'center',
+    marginBottom: Spacing.sm,
+  },
+  quizWhyProWrap: {
+    width: '100%',
+    maxWidth: 420,
+    paddingHorizontal: Spacing.base,
   },
 });

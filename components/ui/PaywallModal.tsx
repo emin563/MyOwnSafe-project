@@ -11,6 +11,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { useAppStore } from '@/store/app-store';
 
 type Props = {
   visible: boolean;
@@ -24,6 +25,10 @@ const BENEFITS = [
   {
     title: 'Unlimited Storage:',
     description: 'Break the 3-file limit. Store thousands of photos and PDFs.',
+  },
+  {
+    title: 'Works Fully Offline:',
+    description: 'Your documents stay on your device. No cloud required.',
   },
   {
     title: 'No Subscriptions:',
@@ -41,6 +46,7 @@ const BENEFITS = [
 
 export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) {
   const insets = useSafeAreaInsets();
+  const isIntroEligible = useAppStore((s) => s.isIntroEligible);
 
   return (
     <Modal
@@ -87,7 +93,19 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
           </View>
 
           <View style={styles.priceBox}>
-            <Text style={styles.priceText}>$9.99, One Time Payment</Text>
+            {isIntroEligible ? (
+              <>
+                <Text style={styles.priceNormal}>$10 — one-time payment</Text>
+                <Text style={styles.priceIntroHighlight}>For 7 days just $8</Text>
+                <Text style={styles.priceTangible}>About the price of a lunch — one-time, no subscription.</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.priceText}>$10 — one-time payment</Text>
+                <Text style={styles.priceFinePrint}>No subscriptions, ever.</Text>
+                <Text style={styles.priceTangible}>About the price of a lunch — one-time, no subscription.</Text>
+              </>
+            )}
           </View>
 
           <Pressable
@@ -191,10 +209,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.base,
   },
+  priceNormal: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    marginBottom: Spacing.xs,
+  },
+  priceIntroHighlight: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeLg,
+    fontWeight: Typography.fontWeightBold,
+    marginTop: Spacing.xs,
+  },
+  priceKicker: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: 2,
+  },
   priceText: {
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightMedium,
+  },
+  priceSubText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    marginTop: 4,
+  },
+  priceFinePrint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  priceTangible: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    marginTop: Spacing.sm,
+    textAlign: 'center',
   },
   upgradeBtn: {
     backgroundColor: Colors.primary,

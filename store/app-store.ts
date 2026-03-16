@@ -57,6 +57,10 @@ type AppStore = {
 
   // Pro
   isPro: boolean;
+  /** Timestamp (ms) of the very first app launch, for intro pricing eligibility. */
+  firstLaunchAt: number | null;
+  /** True when user is within the first 7 days after firstLaunchAt. */
+  isIntroEligible: boolean;
 
   // Bulk import (multi-file pick → review screen)
   pendingBulkImports: { fileUri: string; fileType: FileType }[];
@@ -139,6 +143,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pinHash: null,
   biometricEnabled: false,
   isPro: false,
+  firstLaunchAt: null,
+  isIntroEligible: false,
   pendingBulkImports: [],
 
   setDbReady: (ready) => set({ isDbReady: ready }),
@@ -170,11 +176,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const pinHash = await getSetting('pinHash');
     const biometricVal = await getSetting('biometricEnabled');
     const proVal = await getSetting('isPro');
+    const firstLaunchAtVal = await getSetting('firstLaunchAt');
     const pinEnabled = pinEnabledVal === 'true';
     const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
+    const now = Date.now();
+    let firstLaunchAt = firstLaunchAtVal ? Number(firstLaunchAtVal) : NaN;
+    if (!Number.isFinite(firstLaunchAt)) {
+      firstLaunchAt = now;
+      await setSetting('firstLaunchAt', String(firstLaunchAt));
+    }
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    const isIntroEligible = now - firstLaunchAt < SEVEN_DAYS_MS;
     const lockActive = pinEnabled || biometricEnabled;
-    set({ pinEnabled, pinHash, biometricEnabled, isPro, isUnlocked: !lockActive });
+    set({
+      pinEnabled,
+      pinHash,
+      biometricEnabled,
+      isPro,
+      firstLaunchAt,
+      isIntroEligible,
+      isUnlocked: !lockActive,
+    });
   },
 
   setPinEnabled: async (enabled, pin) => {
