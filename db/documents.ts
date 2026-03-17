@@ -28,9 +28,9 @@ export async function createDocument(
 ): Promise<number> {
   const db = await getDb();
   const result = await db.runAsync(
-    `INSERT INTO documents (title, file_uri, file_type, category_id, purchase_price, expiry_date, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [title, fileUri, fileType, categoryId, purchasePrice ?? null, expiryDate ?? null, notes ?? null]
+    `INSERT INTO documents (title, file_uri, file_type, category_id, purchase_price, expiry_date, notes, ocr_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [title, fileUri, fileType, categoryId, purchasePrice ?? null, expiryDate ?? null, notes ?? null, null]
   );
   return result.lastInsertRowId;
 }
@@ -56,6 +56,16 @@ export async function updateDocument(
   );
 }
 
+export async function updateDocumentOcrText(id: number, text: string | null): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `UPDATE documents
+     SET ocr_text = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+    [text, id]
+  );
+}
+
 export async function updateDocumentNotificationId(
   id: number,
   notificationId: string | null
@@ -72,16 +82,17 @@ export async function deleteDocument(id: number): Promise<void> {
   await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);
 }
 
-export async function searchDocuments(query: string): Promise<Document[]> {
+export async function searchDocuments(query: string, includeOcr: boolean = true): Promise<Document[]> {
   const db = await getDb();
   const like = `%${query}%`;
+  const ocrClause = includeOcr ? ' OR d.ocr_text LIKE ?' : '';
   return db.getAllAsync<Document>(
     `SELECT DISTINCT d.* FROM documents d
      LEFT JOIN document_tags dt ON dt.document_id = d.id
      LEFT JOIN tags t ON t.id = dt.tag_id
-     WHERE d.title LIKE ? OR d.notes LIKE ? OR t.name LIKE ?
+     WHERE d.title LIKE ? OR d.notes LIKE ? OR t.name LIKE ?${ocrClause}
      ORDER BY d.updated_at DESC`,
-    [like, like, like]
+    includeOcr ? [like, like, like, like] : [like, like, like]
   );
 }
 

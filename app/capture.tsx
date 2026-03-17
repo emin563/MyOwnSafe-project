@@ -23,10 +23,12 @@ import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import type { FileType } from '@/db/types';
-import { PaywallModal, QuizWhyPro } from '@/components/ui';
+import { LimitReachedDialog, PaywallModal } from '@/components/ui';
+import { createPdfFromImages } from '@/services/PdfService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { getFreeLimit } from '@/services/limits';
 
-const FREE_FILE_LIMIT = 3;
+const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
 
 export default function CaptureScreen() {
   const { tab: paramTab } = useLocalSearchParams<{ tab?: string }>();
@@ -34,13 +36,15 @@ export default function CaptureScreen() {
   const [facing, setFacing] = useState<'back' | 'front'>('back');
   const [flash, setFlash] = useState<'off' | 'on'>('off');
   const [capturing, setCapturing] = useState(false);
+  const [multiPageMode, setMultiPageMode] = useState(false);
+  const [multiPageImages, setMultiPageImages] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'camera' | 'import'>(
     paramTab === 'import' ? 'import' : 'camera'
   );
-  const [paywallVisible, setPaywallVisible] = useState(false);
   const [limitVisible, setLimitVisible] = useState(false);
-  const [showWhyPro, setShowWhyPro] = useState(false);
-  const cameraRef = useRef<CameraView>(null);
+  const [limitKind, setLimitKind] = useState<'documents'>('documents');
+  const [paywallVisible, setPaywallVisible] = useState(false);
+  const cameraRef = useRef<CameraView | null>(null);
 
   // Prevent lock from showing when app goes to background while on this screen (e.g. picker or back).
   useEffect(() => {
@@ -60,9 +64,9 @@ export default function CaptureScreen() {
     const { isPro } = useAppStore.getState();
     if (isPro) return true;
     const totalFiles = await getTotalFileCount();
-    if (totalFiles >= FREE_FILE_LIMIT) {
+    if (totalFiles >= FREE_DOCUMENT_LIMIT) {
+      setLimitKind('documents');
       setLimitVisible(true);
-      setShowWhyPro(false);
       return false;
     }
     return true;
@@ -80,10 +84,34 @@ export default function CaptureScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
       if (!photo?.uri) return;
+      if (multiPageMode) {
+        setMultiPageImages((prev) => [...prev, photo.uri]);
+        return;
+      }
       const permanentUri = await saveFileToArchive(photo.uri);
-      router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'image' } });
+      router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
     } catch (error) {
       Alert.alert('Capture Failed', 'Could not capture the photo. Please try again.');
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  const handleFinishMultiPage = async () => {
+    if (capturing) return;
+    if (multiPageImages.length === 0) return;
+    if (!(await checkSlotLimit())) return;
+    setCapturing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const pdfTempUri = await createPdfFromImages(multiPageImages);
+      const pdfName = `scan_${Date.now()}.pdf`;
+      const permanentUri = await saveFileToArchive(pdfTempUri, pdfName);
+      setMultiPageImages([]);
+      setMultiPageMode(false);
+      router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'pdf' } });
+    } catch {
+      Alert.alert('PDF Failed', 'Could not create the PDF. Please try again.');
     } finally {
       setCapturing(false);
     }
@@ -102,21 +130,22 @@ export default function CaptureScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const totalFiles = await getTotalFileCount();
       const { isPro } = useAppStore.getState();
-      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_DOCUMENT_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
+        setLimitKind('documents');
         setLimitVisible(true);
-        setShowWhyPro(false);
         return;
       }
       if (result.assets.length === 1) {
         const permanentUri = await saveFileToArchive(result.assets[0].uri);
-        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'image' } });
+        router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
         return;
       }
-      const bulk: { fileUri: string; fileType: 'image' | 'pdf' }[] = [];
+      const bulk: { fileUri: string; fileType: FileType; name?: string }[] = [];
       for (const asset of result.assets) {
         const permanentUri = await saveFileToArchive(asset.uri);
-        bulk.push({ fileUri: permanentUri, fileType: 'image' });
+        const name = (asset as any)?.fileName || (asset as any)?.filename;
+        bulk.push({ fileUri: permanentUri, fileType: 'image', name });
       }
       useAppStore.getState().setPendingBulkImports(bulk);
       router.replace('/document/import-review');
@@ -139,24 +168,23 @@ export default function CaptureScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const totalFiles = await getTotalFileCount();
       const { isPro } = useAppStore.getState();
-      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_DOCUMENT_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
+        setLimitKind('documents');
         setLimitVisible(true);
-        setShowWhyPro(false);
         return;
       }
       if (result.assets.length === 1) {
         const permanentUri = await saveFileToArchive(result.assets[0].uri, `doc_${Date.now()}.pdf`);
-        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType: 'pdf' } });
+        router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'pdf' } });
         return;
       }
-      const bulk: { fileUri: string; fileType: 'image' | 'pdf' }[] = [];
+      const bulk: { fileUri: string; fileType: FileType; name?: string }[] = [];
       for (let i = 0; i < result.assets.length; i++) {
-        const permanentUri = await saveFileToArchive(
-          result.assets[i].uri,
-          `doc_${Date.now()}_${i}.pdf`
-        );
-        bulk.push({ fileUri: permanentUri, fileType: 'pdf' });
+        const asset = result.assets[i];
+        const inferredName = asset.name || `doc_${Date.now()}_${i}.pdf`;
+        const permanentUri = await saveFileToArchive(asset.uri, inferredName);
+        bulk.push({ fileUri: permanentUri, fileType: 'pdf', name: inferredName });
       }
       useAppStore.getState().setPendingBulkImports(bulk);
       router.replace('/document/import-review');
@@ -183,10 +211,10 @@ export default function CaptureScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const totalFiles = await getTotalFileCount();
       const { isPro } = useAppStore.getState();
-      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_FILE_LIMIT - totalFiles);
+      const slotsLeft = isPro ? result.assets.length : Math.max(0, FREE_DOCUMENT_LIMIT - totalFiles);
       if (!isPro && result.assets.length > slotsLeft) {
+        setLimitKind('documents');
         setLimitVisible(true);
-        setShowWhyPro(false);
         return;
       }
       const getFileName = (uri: string, name?: string, i?: number) => {
@@ -196,17 +224,15 @@ export default function CaptureScreen() {
       if (result.assets.length === 1) {
         const asset = result.assets[0];
         const permanentUri = await saveFileToArchive(asset.uri, getFileName(asset.uri, asset.name));
-        router.replace({ pathname: '/document/new', params: { fileUri: permanentUri, fileType } });
+        router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType } });
         return;
       }
-      const bulk: { fileUri: string; fileType: FileType }[] = [];
+      const bulk: { fileUri: string; fileType: FileType; name?: string }[] = [];
       for (let i = 0; i < result.assets.length; i++) {
         const asset = result.assets[i];
-        const permanentUri = await saveFileToArchive(
-          asset.uri,
-          getFileName(asset.uri, asset.name, i)
-        );
-        bulk.push({ fileUri: permanentUri, fileType });
+        const pickedName = getFileName(asset.uri, asset.name, i);
+        const permanentUri = await saveFileToArchive(asset.uri, pickedName);
+        bulk.push({ fileUri: permanentUri, fileType, name: pickedName });
       }
       useAppStore.getState().setPendingBulkImports(bulk);
       router.replace('/document/import-review');
@@ -293,6 +319,21 @@ export default function CaptureScreen() {
           onCapture={handleCapture}
           onFlipCamera={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}
           onToggleFlash={() => setFlash((f) => (f === 'off' ? 'on' : 'off'))}
+          multiPageMode={multiPageMode}
+          pageCount={multiPageImages.length}
+          onToggleMultiPage={() => {
+            const { isPro } = useAppStore.getState();
+            if (!isPro) {
+              setPaywallVisible(true);
+              return;
+            }
+            setMultiPageMode((v) => {
+              const next = !v;
+              if (!next) setMultiPageImages([]);
+              return next;
+            });
+          }}
+          onFinishMultiPage={handleFinishMultiPage}
         />
       ) : (
         <ImportTab
@@ -304,81 +345,15 @@ export default function CaptureScreen() {
         />
       )}
     </SafeAreaView>
-      <Modal
+      <LimitReachedDialog
         visible={limitVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setLimitVisible(false);
-          setShowWhyPro(false);
+        kind={limitKind}
+        onClose={() => setLimitVisible(false)}
+        onUpgrade={async () => {
+          await useAppStore.getState().setIsPro(true);
         }}
-      >
-        <View style={styles.limitOverlay}>
-          <View style={styles.limitCard}>
-            <Text style={styles.limitTitle}>Limit reached</Text>
-            <Text style={styles.limitBody}>
-              You&apos;ve reached the free limit for stored documents.
-            </Text>
-            <Text style={styles.limitBodySecondary}>
-              You can free up space or upgrade to Pro to keep adding documents.
-            </Text>
-
-            <View style={styles.limitButtons}>
-              <TouchableOpacity
-                style={styles.limitPrimaryBtn}
-                onPress={() => {
-                  setLimitVisible(false);
-                  setShowWhyPro(false);
-                  setPaywallVisible(true);
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.limitPrimaryText}>Get Pro – one-time payment</Text>
-              </TouchableOpacity>
-              <Text style={styles.limitTangible}>About the price of a lunch — one-time, no subscription.</Text>
-
-              <TouchableOpacity
-                style={styles.limitSecondaryBtn}
-                onPress={() => {
-                  setLimitVisible(false);
-                  setShowWhyPro(false);
-                  router.replace('/(drawer)');
-                }}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.limitSecondaryText}>Delete files / Manage storage</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.limitTertiaryBtn}
-                onPress={() => setShowWhyPro(true)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.limitTertiaryText}>Why should I get Pro?</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-      <Modal
-        visible={showWhyPro}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowWhyPro(false)}
-      >
-        <View style={styles.limitOverlay}>
-          <View style={styles.quizWhyProWrap}>
-            <QuizWhyPro
-              onUpgrade={() => {
-                setShowWhyPro(false);
-                setLimitVisible(false);
-                setPaywallVisible(true);
-              }}
-              onClose={() => setShowWhyPro(false)}
-            />
-          </View>
-        </View>
-      </Modal>
+        onManage={() => router.replace('/(drawer)')}
+      />
       <PaywallModal
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
@@ -398,13 +373,17 @@ export default function CaptureScreen() {
 type CameraTabProps = {
   permission: ReturnType<typeof useCameraPermissions>[0];
   requestPermission: () => void;
-  cameraRef: React.RefObject<CameraView>;
+  cameraRef: React.RefObject<CameraView | null>;
   facing: 'back' | 'front';
   flash: 'off' | 'on';
   capturing: boolean;
   onCapture: () => void;
   onFlipCamera: () => void;
   onToggleFlash: () => void;
+  multiPageMode: boolean;
+  pageCount: number;
+  onToggleMultiPage: () => void;
+  onFinishMultiPage: () => void;
 };
 
 function CameraTab({
@@ -417,6 +396,10 @@ function CameraTab({
   onCapture,
   onFlipCamera,
   onToggleFlash,
+  multiPageMode,
+  pageCount,
+  onToggleMultiPage,
+  onFinishMultiPage,
 }: CameraTabProps) {
   if (!permission) {
     return (
@@ -453,6 +436,35 @@ function CameraTab({
         <View pointerEvents="none" style={styles.cameraOverlay}>
           <View style={styles.scanFrame} />
         </View>
+      </View>
+
+      <View style={styles.multiRow}>
+        <TouchableOpacity
+          style={[styles.multiChip, multiPageMode && styles.multiChipActive]}
+          onPress={onToggleMultiPage}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="document-outline" size={16} color={multiPageMode ? Colors.primary : Colors.textSecondary} />
+          <Text style={[styles.multiChipText, multiPageMode && styles.multiChipTextActive]}>
+            Multi-page PDF
+          </Text>
+          {multiPageMode && (
+            <View style={styles.multiCount}>
+              <Text style={styles.multiCountText}>{pageCount}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        {multiPageMode && (
+          <TouchableOpacity
+            style={[styles.multiFinishBtn, pageCount === 0 && styles.multiFinishBtnDisabled]}
+            onPress={onFinishMultiPage}
+            disabled={pageCount === 0 || capturing}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.multiFinishText}>Finish</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <View style={styles.cameraControls}>
@@ -662,6 +674,7 @@ const styles = StyleSheet.create({
   cameraPreview: {
     flex: 1,
     position: 'relative',
+    overflow: 'hidden',
   },
   camera: {
     flex: 1,
@@ -673,7 +686,7 @@ const styles = StyleSheet.create({
   },
   scanFrame: {
     width: '85%',
-    aspectRatio: 0.75,
+    height: '70%',
     borderWidth: 2,
     borderColor: 'rgba(16, 163, 127, 0.7)',
     borderRadius: Radius.lg,
@@ -685,6 +698,67 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xl,
     paddingHorizontal: Spacing.xxl,
     backgroundColor: Colors.background,
+  },
+  multiRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+    backgroundColor: Colors.background,
+  },
+  multiChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs + 2,
+  },
+  multiChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.14)',
+  },
+  multiChipText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  multiChipTextActive: {
+    color: Colors.primary,
+  },
+  multiCount: {
+    marginLeft: Spacing.xs,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  multiCountText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightBold,
+  },
+  multiFinishBtn: {
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.xs + 6,
+  },
+  multiFinishBtnDisabled: {
+    opacity: 0.5,
+  },
+  multiFinishText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
   },
   cameraControlBtn: {
     width: 48,
@@ -783,88 +857,5 @@ const styles = StyleSheet.create({
   importCardSubtitle: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
-  },
-  limitOverlay: {
-    flex: 1,
-    backgroundColor: Colors.overlay,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.base,
-  },
-  limitCard: {
-    width: '100%',
-    maxWidth: 420,
-    borderRadius: Radius.lg,
-    backgroundColor: Colors.surfaceRaised,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  limitTitle: {
-    color: Colors.text,
-    fontSize: Typography.fontSizeLg,
-    fontWeight: Typography.fontWeightSemibold,
-    marginBottom: Spacing.xs,
-    textAlign: 'center',
-  },
-  limitBody: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeBase,
-    textAlign: 'center',
-    marginBottom: Spacing.xs,
-  },
-  limitBodySecondary: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeSm,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
-  },
-  limitButtons: {
-    gap: Spacing.sm,
-    marginBottom: Spacing.sm,
-  },
-  limitPrimaryBtn: {
-    backgroundColor: Colors.primary,
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing.sm + 4,
-    alignItems: 'center',
-  },
-  limitPrimaryText: {
-    color: Colors.white,
-    fontSize: Typography.fontSizeBase,
-    fontWeight: Typography.fontWeightSemibold,
-  },
-  limitSecondaryBtn: {
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing.sm + 2,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surface,
-  },
-  limitSecondaryText: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeBase,
-  },
-  limitTertiaryBtn: {
-    paddingVertical: Spacing.sm,
-    alignItems: 'center',
-  },
-  limitTertiaryText: {
-    color: Colors.primary,
-    fontSize: Typography.fontSizeSm,
-    fontWeight: Typography.fontWeightMedium,
-  },
-  limitTangible: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    textAlign: 'center',
-    marginBottom: Spacing.sm,
-  },
-  quizWhyProWrap: {
-    width: '100%',
-    maxWidth: 420,
-    paddingHorizontal: Spacing.base,
   },
 });

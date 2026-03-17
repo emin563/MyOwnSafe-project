@@ -1,26 +1,24 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Switch,
-  Alert,
-  ActivityIndicator,
-  Platform,
-  StatusBar,
-  ScrollView,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { PaywallModal, QuizWhyPro } from '@/components/ui';
+import { createBackup, restoreFromBackup } from '@/services/BackupService';
+import { cancelAllNotifications } from '@/services/NotificationService';
+import { useAppStore } from '@/store/app-store';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
-import { useAppStore } from '@/store/app-store';
-import { createBackup, restoreFromBackup } from '@/services/BackupService';
-import { cancelAllNotifications } from '@/services/NotificationService';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { PaywallModal, QuizWhyPro } from '@/components/ui';
+import React, { useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    TouchableOpacity,
+    View
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function SettingsScreen() {
   const {
@@ -31,12 +29,15 @@ export default function SettingsScreen() {
     setUnlocked,
     setIsPro,
     isPro,
+    ocrSearchEnabled,
+    setOcrSearchEnabled,
   } = useAppStore();
 
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [premiumExpanded, setPremiumExpanded] = useState(false);
   const [paywallVisible, setPaywallVisible] = useState(false);
+  const [showWhyPro, setShowWhyPro] = useState(false);
 
   // ── Biometric toggle ────────────────────────────────────────────────────
 
@@ -76,6 +77,10 @@ export default function SettingsScreen() {
   // ── Backup ──────────────────────────────────────────────────────────────
 
   const handleBackup = async () => {
+    if (!isPro) {
+      setPaywallVisible(true);
+      return;
+    }
     setBackupLoading(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -91,6 +96,10 @@ export default function SettingsScreen() {
   // ── Restore ─────────────────────────────────────────────────────────────
 
   const handleRestore = async () => {
+    if (!isPro) {
+      setPaywallVisible(true);
+      return;
+    }
     Alert.alert(
       'Restore from Backup',
       'This will replace ALL current data with the contents of the selected backup file. This action cannot be undone.',
@@ -142,6 +151,47 @@ export default function SettingsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* Privacy Section */}
+        <Text style={styles.sectionTitle}>Privacy</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => router.push('/privacy-offline')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Privacy & Offline</Text>
+              <Text style={styles.rowHint}>How Vault keeps your documents on-device</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <View style={styles.row}>
+            <View style={styles.rowIcon}>
+              <Ionicons name="scan-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Search inside images (OCR)</Text>
+              <Text style={styles.rowHint}>
+                Include text recognized from scanned images in search results
+              </Text>
+            </View>
+            <Switch
+              value={ocrSearchEnabled}
+              onValueChange={async (value) => {
+                await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                await setOcrSearchEnabled(value);
+              }}
+              trackColor={{ false: Colors.border, true: Colors.primary }}
+              thumbColor={Colors.white}
+              ios_backgroundColor={Colors.border}
+            />
+          </View>
+        </View>
+
         {/* Security Section */}
         <Text style={styles.sectionTitle}>Security</Text>
         <View style={styles.card}>
@@ -220,6 +270,30 @@ export default function SettingsScreen() {
         {/* About: Why Pro (quiz) + MyOwnSafe Pro (paywall) */}
         <Text style={styles.sectionTitle}>About</Text>
         <View style={styles.card}>
+          {__DEV__ && (
+            <>
+              <View style={styles.row}>
+                <View style={styles.rowIcon}>
+                  <Ionicons name="code-slash-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Developer: Pro mode</Text>
+                  <Text style={styles.rowHint}>Enable/disable Pro for testing</Text>
+                </View>
+                <Switch
+                  value={isPro}
+                  onValueChange={async (value) => {
+                    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    await setIsPro(value);
+                  }}
+                  trackColor={{ false: Colors.border, true: Colors.primary }}
+                  thumbColor={Colors.white}
+                  ios_backgroundColor={Colors.border}
+                />
+              </View>
+              <View style={styles.divider} />
+            </>
+          )}
           <TouchableOpacity
             style={[styles.row, styles.rowBtn]}
             onPress={() => setPremiumExpanded((e) => !e)}

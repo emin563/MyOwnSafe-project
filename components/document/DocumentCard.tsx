@@ -15,7 +15,13 @@ import * as Sharing from 'expo-sharing';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
-import { ConfirmModal } from '@/components/ui';
+import { AiEducationSheet, AiShareDisclaimerModal, ConfirmModal } from '@/components/ui';
+import { LimitReachedDialog } from '@/components/ui';
+import {
+  markAiShareDisclaimerShownThisSession,
+  setAiShareDisclaimerDismissed,
+  shouldShowAiShareDisclaimer,
+} from '@/services/AiOptionalWorkflow';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document } from '@/db/types';
 import type { Tag } from '@/db/types';
@@ -39,10 +45,13 @@ export function DocumentCard({
   onLongPress,
   onPressInSelectionMode,
 }: Props) {
-  const { categories, removeDocument, editDocument, duplicateDocument } = useAppStore();
+  const { categories, removeDocument, editDocument, duplicateDocument, showToast, isPro, setIsPro } = useAppStore();
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  const [aiSheetVisible, setAiSheetVisible] = useState(false);
+  const [aiDisclaimerVisible, setAiDisclaimerVisible] = useState(false);
+  const [duplicateGateVisible, setDuplicateGateVisible] = useState(false);
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
 
   const category = categories.find((c) => c.id === document.category_id);
@@ -57,6 +66,36 @@ export function DocumentCard({
       await Sharing.shareAsync(document.file_uri);
     } catch {
       // Ignore sharing errors
+    }
+  };
+
+  const openNativeShare = async () => {
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await Sharing.shareAsync(document.file_uri, { dialogTitle: 'Share to AI' });
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleShareToAi = async () => {
+    setAiSheetVisible(true);
+  };
+
+  const continueAiShare = async () => {
+    setAiSheetVisible(false);
+    try {
+      const shouldShow = await shouldShowAiShareDisclaimer();
+      if (shouldShow) {
+        markAiShareDisclaimerShownThisSession();
+        setAiDisclaimerVisible(true);
+        return;
+      }
+      await openNativeShare();
+    } catch {
+      await openNativeShare();
     }
   };
 
@@ -86,16 +125,22 @@ export function DocumentCard({
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     await deleteFileFromArchive(document.file_uri);
     await removeDocument(document.id);
+    showToast('Document deleted', 'success');
     setDeleteModalVisible(false);
   };
 
   const handleDuplicate = async () => {
+    if (!isPro) {
+      setDuplicateGateVisible(true);
+      return;
+    }
     if (duplicating) return;
     setDuplicating(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       await duplicateDocument(document.id);
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast('Document duplicated', 'success');
     } catch {
       // ignore
     } finally {
@@ -116,6 +161,7 @@ export function DocumentCard({
       document.expiry_date ?? null,
       document.notes ?? null
     );
+    showToast('Moved to category', 'success');
   };
 
   const handlePress = () => {
@@ -217,7 +263,7 @@ export function DocumentCard({
                 {document.title}
               </Text>
               {(isExpired || isExpiringSoon) && (
-                <View style={[styles.expiryBadge, isExpired ? styles.expiryBadgeExpired : styles.expiryBadgeWarn]}>
+                <View style={[styles.expiryBadge, isExpired ? styles.expiryBadgeExpired : null]}>
                   <Ionicons
                     name={isExpired ? 'close-circle' : 'warning'}
                     size={11}
@@ -277,6 +323,10 @@ export function DocumentCard({
         <View style={styles.footer}>
           <Text style={styles.date}>{formatDate(document.updated_at)}</Text>
           <View style={styles.actions}>
+            <TouchableOpacity style={styles.actionBtn} onPress={handleShareToAi} activeOpacity={0.7}>
+              <Ionicons name="sparkles-outline" size={15} color={Colors.textSecondary} />
+              <Text style={styles.actionText}>Share to AI</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.actionBtn} onPress={handleShare} activeOpacity={0.7}>
               <Ionicons name="share-outline" size={15} color={Colors.textSecondary} />
               <Text style={styles.actionText}>Share</Text>
@@ -334,6 +384,38 @@ export function DocumentCard({
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setDeleteModalVisible(false)}
+      />
+
+      <LimitReachedDialog
+        visible={duplicateGateVisible}
+        kind="documents"
+        onClose={() => setDuplicateGateVisible(false)}
+        onUpgrade={async () => {
+          await setIsPro(true);
+        }}
+      />
+
+      <AiEducationSheet
+        visible={aiSheetVisible}
+        onCancel={() => setAiSheetVisible(false)}
+        onContinue={continueAiShare}
+      />
+
+      <AiShareDisclaimerModal
+        visible={aiDisclaimerVisible}
+        onCancel={() => setAiDisclaimerVisible(false)}
+        onContinue={async (dontShowAgain) => {
+          try {
+            if (dontShowAgain) {
+              await setAiShareDisclaimerDismissed(true);
+            }
+          } catch {
+            // ignore
+          } finally {
+            setAiDisclaimerVisible(false);
+            await openNativeShare();
+          }
+        }}
       />
 
       <Modal visible={moveModalVisible} transparent animationType="slide" onRequestClose={() => setMoveModalVisible(false)}>

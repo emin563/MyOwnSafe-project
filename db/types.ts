@@ -14,6 +14,7 @@ export type Document = {
   title: string;
   file_uri: string;
   file_type: FileType;
+  ocr_text?: string | null;
   purchase_price: number | null;
   expiry_date: string | null;
   notes: string | null;

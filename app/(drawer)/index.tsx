@@ -18,9 +18,9 @@ import { getTagsForDocuments } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { shareSelectedDocuments } from '@/services/BackupService';
 import { DocumentCard } from '@/components/document/DocumentCard';
-import { ConfirmModal } from '@/components/ui';
+import { ConfirmModal, PaywallModal, QuizWhyPro } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Document } from '@/db/types';
+import type { Document, FileType } from '@/db/types';
 import type { Tag } from '@/db/types';
 
 export default function HomeScreen() {
@@ -45,11 +45,17 @@ export default function HomeScreen() {
     tagDocument,
     loadDocuments,
     loadDocumentsByTag,
+    showToast,
+    isPro,
+    setIsPro,
   } = useAppStore();
   const [documentTagsMap, setDocumentTagsMap] = useState<Record<number, Tag[]>>({});
   const [bulkDeleteVisible, setBulkDeleteVisible] = useState(false);
   const [bulkMoveVisible, setBulkMoveVisible] = useState(false);
   const [bulkTagVisible, setBulkTagVisible] = useState(false);
+  const [fileTypeFilter, setFileTypeFilter] = useState<FileType | 'all'>('all');
+  const [paywallVisible, setPaywallVisible] = useState(false);
+  const [showWhyPro, setShowWhyPro] = useState(false);
 
   useEffect(() => {
     const ids = documents.map((d) => d.id);
@@ -62,6 +68,11 @@ export default function HomeScreen() {
 
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
   const selectedTag = tags.find((t) => t.id === selectedTagId);
+
+  const displayedDocuments =
+    fileTypeFilter === 'all'
+      ? documents
+      : documents.filter((d) => d.file_type === fileTypeFilter);
 
   const headerTitle = searchQuery
     ? `Results for "${searchQuery}"`
@@ -76,6 +87,10 @@ export default function HomeScreen() {
   };
 
   const handleCardLongPress = (id: number) => {
+    if (!isPro) {
+      setPaywallVisible(true);
+      return;
+    }
     if (!selectionMode) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setSelectionMode(true);
@@ -104,6 +119,7 @@ export default function HomeScreen() {
     clearSelection();
     if (selectedTagId) await loadDocumentsByTag(selectedTagId);
     else await loadDocuments(selectedCategoryId);
+    showToast('Documents deleted', 'success');
   };
 
   const handleBulkMove = async (categoryId: number | null) => {
@@ -122,11 +138,17 @@ export default function HomeScreen() {
     }
     clearSelection();
     await loadDocuments(categoryId);
+    showToast('Documents moved', 'success');
   };
 
   const handleBulkZip = async () => {
+    if (!isPro) {
+      setPaywallVisible(true);
+      return;
+    }
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     await shareSelectedDocuments(selectedDocuments, categories);
+    showToast('Zip ready to share', 'success');
   };
 
   const handleBulkTag = async (tagId: number) => {
@@ -190,6 +212,30 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.filterRow}>
+        {(
+          [
+            { key: 'all', label: 'All' },
+            { key: 'image', label: 'Images' },
+            { key: 'pdf', label: 'PDFs' },
+            { key: 'word', label: 'Word' },
+            { key: 'excel', label: 'Excel' },
+            { key: 'document', label: 'Other' },
+          ] as const
+        ).map(({ key, label }) => (
+          <TouchableOpacity
+            key={key}
+            style={[styles.filterChip, fileTypeFilter === key && styles.filterChipActive]}
+            onPress={() => setFileTypeFilter(key)}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.filterChipText, fileTypeFilter === key && styles.filterChipTextActive]}>
+              {label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <View style={styles.sortRow}>
         {(['newest', 'oldest', 'expiring', 'name'] as const).map((key) => (
           <TouchableOpacity
@@ -249,6 +295,38 @@ export default function HomeScreen() {
         onCancel={() => setBulkDeleteVisible(false)}
       />
 
+      <Modal
+        visible={showWhyPro}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowWhyPro(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={{ width: '100%', maxWidth: 420, paddingHorizontal: Spacing.base }}>
+            <QuizWhyPro
+              onUpgrade={() => {
+                setShowWhyPro(false);
+                setPaywallVisible(true);
+              }}
+              onClose={() => setShowWhyPro(false)}
+            />
+          </View>
+        </View>
+      </Modal>
+
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onUpgrade={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+        onRestore={() => {
+          setIsPro(true);
+          setPaywallVisible(false);
+        }}
+      />
+
       <Modal visible={bulkMoveVisible} transparent animationType="slide" onRequestClose={() => setBulkMoveVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} onPress={() => setBulkMoveVisible(false)} activeOpacity={1}>
           <View style={styles.bulkModalSheet}>
@@ -300,18 +378,18 @@ export default function HomeScreen() {
       </Modal>
 
       <FlatList
-        data={documents}
+        data={displayedDocuments}
         keyExtractor={(item) => String(item.id)}
         renderItem={renderDocument}
         contentContainerStyle={styles.list}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
-        ListEmptyComponent={<EmptyState searchQuery={searchQuery} />}
+        ListEmptyComponent={<EmptyState searchQuery={searchQuery} fileTypeFilter={fileTypeFilter} />}
       />
     </SafeAreaView>
   );
 }
 
-function EmptyState({ searchQuery }: { searchQuery: string }) {
+function EmptyState({ searchQuery, fileTypeFilter }: { searchQuery: string; fileTypeFilter: FileType | 'all' }) {
   if (searchQuery) {
     return (
       <View style={styles.emptyContainer}>
@@ -322,6 +400,28 @@ function EmptyState({ searchQuery }: { searchQuery: string }) {
         <Text style={styles.emptySubtitle}>
           No documents matched "{searchQuery}". Try a different search term.
         </Text>
+      </View>
+    );
+  }
+
+  if (fileTypeFilter !== 'all') {
+    return (
+      <View style={styles.emptyContainer}>
+        <View style={styles.emptyIcon}>
+          <Ionicons name="filter-outline" size={48} color={Colors.textMuted} />
+        </View>
+        <Text style={styles.emptyTitle}>No documents in this filter</Text>
+        <Text style={styles.emptySubtitle}>
+          Try switching the file type filter back to "All" or add a new document.
+        </Text>
+        <TouchableOpacity
+          style={styles.emptyButton}
+          onPress={() => router.push('/capture')}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="add-circle-outline" size={18} color={Colors.white} />
+          <Text style={styles.emptyButtonText}>Add Document</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -390,6 +490,34 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xs,
+  },
+  filterChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  filterChipActive: {
+    backgroundColor: 'rgba(16, 163, 127, 0.15)',
+    borderColor: Colors.primary,
+  },
+  filterChipText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  filterChipTextActive: {
+    color: Colors.primary,
   },
   sortChip: {
     paddingHorizontal: Spacing.sm,

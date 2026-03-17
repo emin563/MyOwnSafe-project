@@ -6,6 +6,14 @@ export async function getCategories(): Promise<Category[]> {
   return db.getAllAsync<Category>('SELECT * FROM categories ORDER BY name ASC');
 }
 
+export async function getTotalCategoryCount(): Promise<number> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) as count FROM categories'
+  );
+  return row?.count ?? 0;
+}
+
 export async function createCategory(name: string, iconName: string = 'folder-outline'): Promise<number> {
   const db = await getDb();
   const result = await db.runAsync(

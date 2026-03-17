@@ -3,6 +3,50 @@ import * as Sharing from 'expo-sharing';
 import * as LegacyFS from 'expo-file-system/legacy';
 import type { Document } from '@/db/types';
 
+export async function createPdfFromImages(imageUris: string[]): Promise<string> {
+  const base64Images: string[] = [];
+  for (const uri of imageUris) {
+    try {
+      const b64 = await LegacyFS.readAsStringAsync(uri, { encoding: LegacyFS.EncodingType.Base64 });
+      base64Images.push(b64);
+    } catch {
+      // skip unreadable images
+    }
+  }
+
+  const pagesHtml = base64Images
+    .map(
+      (b64, idx) => `
+        <div class="page">
+          <img src="data:image/jpeg;base64,${b64}" />
+        </div>
+        ${idx < base64Images.length - 1 ? '<div class="page-break"></div>' : ''}
+      `
+    )
+    .join('\n');
+
+  const html = `<!DOCTYPE html>
+  <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { background: #fff; }
+      .page { width: 100%; padding: 18px; }
+      .page img { width: 100%; height: auto; object-fit: contain; }
+      .page-break { page-break-after: always; }
+    </style>
+  </head>
+  <body>
+    ${pagesHtml}
+  </body>
+  </html>`;
+
+  const { uri } = await Print.printToFileAsync({ html, base64: false });
+  return uri;
+}
+
 function buildHtmlTemplate(doc: Document, categoryName: string | undefined, imageBase64: string | null): string {
   const priceRow = doc.purchase_price != null
     ? `<tr><td class="label">Purchase Price</td><td>$${doc.purchase_price.toFixed(2)}</td></tr>`

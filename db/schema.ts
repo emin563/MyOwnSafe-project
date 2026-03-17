@@ -35,6 +35,7 @@ export async function initDb(): Promise<void> {
       title TEXT NOT NULL,
       file_uri TEXT NOT NULL,
       file_type TEXT NOT NULL DEFAULT 'image',
+      ocr_text TEXT,
       purchase_price REAL,
       expiry_date TEXT,
       notes TEXT,
@@ -64,6 +65,13 @@ export async function initDb(): Promise<void> {
   // Safe migration: add notification_id column if it does not exist yet
   try {
     await database.execAsync('ALTER TABLE documents ADD COLUMN notification_id TEXT;');
+  } catch {
+    // Column already exists from a previous run — silently skip
+  }
+
+  // Safe migration: add OCR text column if it does not exist yet
+  try {
+    await database.execAsync('ALTER TABLE documents ADD COLUMN ocr_text TEXT;');
   } catch {
     // Column already exists from a previous run — silently skip
   }

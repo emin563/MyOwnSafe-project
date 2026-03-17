@@ -13,7 +13,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
+import { LimitReachedDialog } from '@/components/ui';
+import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import type { FileType } from '@/db/types';
 
 export default function ImportReviewScreen() {
   const {
@@ -28,6 +31,7 @@ export default function ImportReviewScreen() {
 
   const [importCategoryId, setImportCategoryId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+  const [limitVisible, setLimitVisible] = useState(false);
 
   useEffect(() => {
     loadCategories();
@@ -45,9 +49,9 @@ export default function ImportReviewScreen() {
     setAdding(true);
     try {
       for (let i = 0; i < pendingBulkImports.length; i++) {
-        const { fileUri, fileType } = pendingBulkImports[i];
+        const { fileUri, fileType, name } = pendingBulkImports[i];
         await addDocument(
-          `Document ${i + 1}`,
+          name?.trim() ? name.trim() : `Document ${i + 1}`,
           fileUri,
           fileType,
           importCategoryId,
@@ -60,7 +64,11 @@ export default function ImportReviewScreen() {
       setSelectedCategoryId(importCategoryId);
       await loadDocuments(importCategoryId);
       router.replace('/(drawer)');
-    } catch {
+    } catch (e) {
+      if (isLimitError(e)) {
+        setLimitVisible(true);
+        return;
+      }
       Alert.alert('Error', 'Could not add some documents. Please try again.');
     } finally {
       setAdding(false);
@@ -104,6 +112,20 @@ export default function ImportReviewScreen() {
 
   const count = pendingBulkImports.length;
 
+  const getTypeLabel = (t: FileType) =>
+    t === 'image' ? 'Image' : t === 'pdf' ? 'PDF' : t === 'word' ? 'Word' : t === 'excel' ? 'Excel' : 'Document';
+
+  const getTypeIcon = (t: FileType) =>
+    t === 'image'
+      ? 'image-outline'
+      : t === 'pdf'
+        ? 'document-outline'
+        : t === 'word'
+          ? 'document-text-outline'
+          : t === 'excel'
+            ? 'grid-outline'
+            : 'document-attach-outline';
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -123,6 +145,25 @@ export default function ImportReviewScreen() {
           <Ionicons name="documents-outline" size={40} color={Colors.primary} />
           <Text style={styles.summaryTitle}>{count} file{count !== 1 ? 's' : ''} selected</Text>
           <Text style={styles.summarySubtitle}>Choose a category, then add all to your vault.</Text>
+        </View>
+
+        <Text style={styles.sectionLabel}>Selected files</Text>
+        <View style={styles.filesCard}>
+          {pendingBulkImports.map((item, idx) => (
+            <View key={`${item.fileUri}-${idx}`} style={styles.fileRow}>
+              <View style={styles.fileIcon}>
+                <Ionicons name={getTypeIcon(item.fileType) as any} size={18} color={Colors.textSecondary} />
+              </View>
+              <View style={styles.fileText}>
+                <Text style={styles.fileName} numberOfLines={1}>
+                  {item.name?.trim() ? item.name.trim() : `File ${idx + 1}`}
+                </Text>
+                <Text style={styles.fileMeta}>
+                  {getTypeLabel(item.fileType)}
+                </Text>
+              </View>
+            </View>
+          ))}
         </View>
 
         <Text style={styles.sectionLabel}>Category</Text>
@@ -192,6 +233,16 @@ export default function ImportReviewScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      <LimitReachedDialog
+        visible={limitVisible}
+        kind="documents"
+        onClose={() => setLimitVisible(false)}
+        onUpgrade={async () => {
+          await useAppStore.getState().setIsPro(true);
+        }}
+        onManage={() => router.replace('/(drawer)')}
+      />
     </SafeAreaView>
   );
 }
@@ -255,6 +306,44 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightMedium,
     marginBottom: Spacing.sm,
+  },
+  filesCard: {
+    backgroundColor: Colors.surfaceRaised,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: Spacing.lg,
+    overflow: 'hidden',
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.base,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  fileIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceHighlight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileText: {
+    flex: 1,
+  },
+  fileName: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  fileMeta: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    marginTop: 2,
   },
   categoryList: {
     backgroundColor: Colors.surfaceRaised,

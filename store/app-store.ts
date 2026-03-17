@@ -5,6 +5,7 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  getTotalCategoryCount,
 } from '@/db/categories';
 import {
   getAllTags,
@@ -15,6 +16,8 @@ import {
   removeTagFromDocument,
   getDocumentsByTag,
   getOrCreateTagByName,
+  getTagIdByName,
+  getTotalTagCount,
 } from '@/db/tags';
 import {
   getDocuments,
@@ -23,6 +26,8 @@ import {
   deleteDocument,
   searchDocuments,
   updateDocumentNotificationId,
+  updateDocumentOcrText,
+  getTotalFileCount,
 } from '@/db/documents';
 import { getSetting, setSetting } from '@/db/settings';
 import {
@@ -30,6 +35,10 @@ import {
   cancelNotification,
 } from '@/services/NotificationService';
 import { copyFileInArchive } from '@/services/StorageService';
+import { requireOptionalNativeModule } from 'expo-modules-core';
+import { getFreeLimit } from '@/services/limits';
+import { LimitError } from '@/services/LimitError';
+// Note: OCR native module is loaded lazily (Expo Go safe).
 
 type AppStore = {
   categories: Category[];
@@ -62,19 +71,23 @@ type AppStore = {
   /** True when user is within the first 7 days after firstLaunchAt. */
   isIntroEligible: boolean;
 
+  // OCR search
+  ocrSearchEnabled: boolean;
+  setOcrSearchEnabled: (enabled: boolean) => Promise<void>;
+
+  // Toast (lightweight UX feedback)
+  toast: { message: string; type?: 'success' | 'danger' | 'info' } | null;
+  showToast: (message: string, type?: 'success' | 'danger' | 'info') => void;
+  clearToast: () => void;
+
   // Bulk import (multi-file pick → review screen)
-  pendingBulkImports: { fileUri: string; fileType: FileType }[];
+  pendingBulkImports: { fileUri: string; fileType: FileType; name?: string }[];
 
   setDbReady: (ready: boolean) => void;
   setSearchQuery: (query: string) => void;
   setSelectedCategoryId: (id: number | null) => void;
   setSelectedTagId: (id: number | null) => void;
   setSortBy: (sort: 'newest' | 'oldest' | 'expiring' | 'name') => void;
-
-  setSelectionMode: (on: boolean) => void;
-  toggleSelected: (id: number) => void;
-  selectAll: () => void;
-  clearSelection: () => void;
 
   setUnlocked: (unlocked: boolean) => void;
 
@@ -122,7 +135,7 @@ type AppStore = {
   setBiometricEnabled: (enabled: boolean) => Promise<void>;
   setIsPro: (value: boolean) => Promise<void>;
 
-  setPendingBulkImports: (items: { fileUri: string; fileType: FileType }[]) => void;
+  setPendingBulkImports: (items: { fileUri: string; fileType: FileType; name?: string }[]) => void;
   clearPendingBulkImports: () => void;
 };
 
@@ -145,6 +158,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isPro: false,
   firstLaunchAt: null,
   isIntroEligible: false,
+  ocrSearchEnabled: true,
+  toast: null,
   pendingBulkImports: [],
 
   setDbReady: (ready) => set({ isDbReady: ready }),
@@ -177,9 +192,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const biometricVal = await getSetting('biometricEnabled');
     const proVal = await getSetting('isPro');
     const firstLaunchAtVal = await getSetting('firstLaunchAt');
+    const ocrEnabledVal = await getSetting('ocrSearchEnabled');
     const pinEnabled = pinEnabledVal === 'true';
     const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
+    const ocrSearchEnabled = ocrEnabledVal == null ? true : ocrEnabledVal === 'true';
     const now = Date.now();
     let firstLaunchAt = firstLaunchAtVal ? Number(firstLaunchAtVal) : NaN;
     if (!Number.isFinite(firstLaunchAt)) {
@@ -196,6 +213,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       isPro,
       firstLaunchAt,
       isIntroEligible,
+      ocrSearchEnabled,
       isUnlocked: !lockActive,
     });
   },
@@ -230,6 +248,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isPro: value });
   },
 
+  setOcrSearchEnabled: async (enabled) => {
+    await setSetting('ocrSearchEnabled', String(enabled));
+    set({ ocrSearchEnabled: enabled });
+  },
+
+  showToast: (message, type = 'info') => {
+    set({ toast: { message, type } });
+  },
+  clearToast: () => set({ toast: null }),
+
   setPendingBulkImports: (items) => set({ pendingBulkImports: items }),
   clearPendingBulkImports: () => set({ pendingBulkImports: [] }),
 
@@ -239,6 +267,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addCategory: async (name, iconName) => {
+    if (!get().isPro) {
+      const count = await getTotalCategoryCount();
+      // The DB seeds 4 default categories on first run. Free should allow 5 *additional* categories.
+      const SEEDED_DEFAULT_CATEGORIES = 4;
+      const userCreated = Math.max(0, count - SEEDED_DEFAULT_CATEGORIES);
+      if (userCreated >= getFreeLimit('categories')) {
+        throw new LimitError('categories', getFreeLimit('categories'));
+      }
+    }
     await createCategory(name, iconName);
     await get().loadCategories();
   },
@@ -277,6 +314,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addTag: async (name) => {
+    if (!get().isPro) {
+      const count = await getTotalTagCount();
+      if (count >= getFreeLimit('tags')) {
+        throw new LimitError('tags', getFreeLimit('tags'));
+      }
+    }
     const id = await createTag(name);
     await get().loadTags();
     return id;
@@ -296,11 +339,53 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   getOrCreateTag: async (name) => {
+    const existingId = await getTagIdByName(name);
+    if (existingId) return existingId;
+
+    if (!get().isPro) {
+      const count = await getTotalTagCount();
+      if (count >= getFreeLimit('tags')) {
+        throw new LimitError('tags', getFreeLimit('tags'));
+      }
+    }
     return getOrCreateTagByName(name);
   },
 
   addDocument: async (title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+    if (!get().isPro) {
+      const count = await getTotalFileCount();
+      if (count >= getFreeLimit('documents')) {
+        throw new LimitError('documents', getFreeLimit('documents'));
+      }
+    }
     const docId = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
+
+    // OCR is non-blocking; store recognized text for image documents.
+    if (fileType === 'image' && get().ocrSearchEnabled) {
+      (async () => {
+        try {
+          const native: any = requireOptionalNativeModule('ExpoTextExtractor');
+          const hasNative = !!native?.extractTextFromImage;
+
+          if (!hasNative) throw new Error('ExpoTextExtractor native module unavailable');
+
+          const parts = await native.extractTextFromImage(fileUri);
+          const text = Array.isArray(parts) ? parts.join('\n') : String(parts ?? '');
+          if (text.trim()) {
+            await updateDocumentOcrText(docId, text);
+          }
+        } catch (e) {
+          // If the native module isn't available (Expo Go), disable OCR to avoid repeated failures.
+          try {
+            await setSetting('ocrSearchEnabled', 'false');
+            set({ ocrSearchEnabled: false });
+            get().showToast('OCR requires a development build. Disabled OCR.', 'info');
+          } catch {
+            // ignore
+          }
+        }
+      })();
+    }
 
     // Schedule expiry notification if date provided
     if (expiryDate) {
@@ -393,7 +478,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().loadDocuments();
       return;
     }
-    const list = await searchDocuments(query);
+    const list = await searchDocuments(query, get().ocrSearchEnabled);
     const sorted = sortDocumentsBy(list, get().sortBy);
     set({ documents: sorted });
   },

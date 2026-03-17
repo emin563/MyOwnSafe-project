@@ -7,6 +7,22 @@ export async function getAllTags(): Promise<Tag[]> {
   return db.getAllAsync<Tag>('SELECT * FROM tags ORDER BY name ASC');
 }
 
+export async function getTotalTagCount(): Promise<number> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ count: number }>('SELECT COUNT(*) as count FROM tags');
+  return row?.count ?? 0;
+}
+
+export async function getTagIdByName(name: string): Promise<number | null> {
+  const db = await getDb();
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM tags WHERE name = ?', [
+    trimmed,
+  ]);
+  return existing?.id ?? null;
+}
+
 export async function createTag(name: string): Promise<number> {
   const db = await getDb();
   const result = await db.runAsync('INSERT INTO tags (name) VALUES (?)', [name.trim()]);

@@ -24,11 +24,27 @@ type Props = {
 const BENEFITS = [
   {
     title: 'Unlimited Storage:',
-    description: 'Break the 3-file limit. Store thousands of photos and PDFs.',
+    description: 'Remove Free limits (25 documents, 5 categories, 25 tags).',
   },
   {
     title: 'Works Fully Offline:',
     description: 'Your documents stay on your device. No cloud required.',
+  },
+  {
+    title: 'AI Optional Workflow:',
+    description: 'Export a copy to any AI app when you need it—no lock-in, no recurring fees.',
+  },
+  {
+    title: 'Backup & Restore:',
+    description: 'Export your vault as a zip and restore it anytime.',
+  },
+  {
+    title: 'Bulk Actions:',
+    description: 'Select multiple documents to delete, move, tag, or zip-share.',
+  },
+  {
+    title: 'Advanced Sort & Filter:',
+    description: 'Find what you need faster with sorting and quick filters.',
   },
   {
     title: 'No Subscriptions:',

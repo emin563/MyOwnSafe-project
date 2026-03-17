@@ -11,11 +11,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
-import { SearchInput, IconButton, InputModal, ConfirmModal, PaywallModal } from '@/components/ui';
+import { SearchInput, IconButton, InputModal, ConfirmModal, LimitReachedDialog } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category } from '@/db/types';
+import { isLimitError } from '@/services/LimitError';
 
-const FREE_CATEGORY_LIMIT = 3;
+// Limits enforced in the store; UI just shows the same Limit dialog.
 
 const CATEGORY_ICONS = [
   'folder-outline',
@@ -48,7 +49,6 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     searchQuery,
     setSearchQuery,
     runSearch,
-    isPro,
     setIsPro,
   } = useAppStore();
 
@@ -61,7 +61,9 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     visible: false,
     category: null,
   });
-  const [paywallVisible, setPaywallVisible] = useState(false);
+  const [limitVisible, setLimitVisible] = useState(false);
+  const [limitKind, setLimitKind] = useState<'categories'>('categories');
+  const categoriesListRef = React.useRef<FlatList<Category> | null>(null);
 
   const handleSelectCategory = (id: number | null) => {
     setSelectedCategoryId(id);
@@ -82,8 +84,19 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   };
 
   const handleAddCategory = async (name: string) => {
-    await addCategory(name);
-    setAddModalVisible(false);
+    try {
+      await addCategory(name);
+      setAddModalVisible(false);
+    } catch (e) {
+      if (isLimitError(e)) {
+        // Close the input modal so "Manage / Delete" doesn't return to a create flow.
+        setAddModalVisible(false);
+        setLimitKind('categories');
+        setLimitVisible(true);
+        return;
+      }
+      throw e;
+    }
   };
 
   const handleEditCategory = async (name: string) => {
@@ -184,13 +197,8 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           <TouchableOpacity
             style={[
               styles.newButton,
-              !isPro && categories.length >= FREE_CATEGORY_LIMIT && styles.newButtonDisabled,
             ]}
             onPress={() => {
-              if (!isPro && categories.length >= FREE_CATEGORY_LIMIT) {
-                setPaywallVisible(true);
-                return;
-              }
               setAddModalVisible(true);
             }}
             activeOpacity={0.7}
@@ -198,12 +206,11 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
             <Ionicons
               name="folder-open-outline"
               size={16}
-              color={!isPro && categories.length >= FREE_CATEGORY_LIMIT ? Colors.textMuted : Colors.textSecondary}
+              color={Colors.textSecondary}
             />
             <Text
               style={[
                 styles.newButtonText,
-                !isPro && categories.length >= FREE_CATEGORY_LIMIT && styles.newButtonTextDisabled,
               ]}
             >
               New category
@@ -241,6 +248,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         </TouchableOpacity>
 
         <FlatList
+          ref={categoriesListRef}
           data={categories}
           keyExtractor={(item) => String(item.id)}
           renderItem={renderCategory}
@@ -253,7 +261,12 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         <View style={styles.divider} />
         <Text style={styles.sectionLabel}>Tags</Text>
         {tags.length === 0 ? (
-          <Text style={styles.tagsEmptyText}>No tags yet. Add one from any document.</Text>
+          <View style={styles.tagsEmptyWrap}>
+            <Text style={styles.tagsEmptyText}>No tags yet</Text>
+            <Text style={styles.tagsEmptySubtext}>
+              Add tags from any document to make search and organization faster.
+            </Text>
+          </View>
         ) : (
           tags.map((tag) => (
               <TouchableOpacity
@@ -320,16 +333,18 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         onConfirm={handleDeleteCategory}
         onCancel={() => setDeleteModal({ visible: false, category: null })}
       />
-      <PaywallModal
-        visible={paywallVisible}
-        onClose={() => setPaywallVisible(false)}
-        onUpgrade={() => {
-          setIsPro(true);
-          setPaywallVisible(false);
+      <LimitReachedDialog
+        visible={limitVisible}
+        kind={limitKind}
+        onClose={() => setLimitVisible(false)}
+        onUpgrade={async () => {
+          await setIsPro(true);
         }}
-        onRestore={() => {
-          setIsPro(true);
-          setPaywallVisible(false);
+        onManage={() => {
+          // Bring the Categories section into view (top of the drawer)
+          setSelectedTagId(null);
+          setSearchQuery('');
+          categoriesListRef.current?.scrollToOffset({ offset: 0, animated: true });
         }}
       />
     </SafeAreaView>
@@ -451,10 +466,24 @@ const styles = StyleSheet.create({
     marginHorizontal: Spacing.base,
   },
   tagsEmptyText: {
-    color: Colors.textMuted,
+    color: Colors.text,
     fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: 2,
+  },
+  tagsEmptyWrap: {
     marginHorizontal: Spacing.base,
     marginBottom: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  tagsEmptySubtext: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
   },
   categoryLabel: {
     color: Colors.textSecondary,

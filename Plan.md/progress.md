@@ -74,8 +74,31 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 
 ---
 
-## 5. Current state (summary)
+## 5. Growth / UX Enhancements (post-MVP)
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| Drawer: add “Add file” entry under “Scan document” (opens Import tab) | ✅ Done |
+| Import: support more file types (Word/Excel/TXT/CSV) | ✅ Done |
+| Import screen: scrollable list (not blocked by system UI) | ✅ Done |
+| Limit reached UX: show “Limit reached” options dialog before paywall | ✅ Done |
+| “Why should I get Pro?” from limit dialog opens Quiz flow (not static bullets) | ✅ Done |
+| Intro pricing: first 7 days ($8), then normal price ($10) | ✅ Done |
+| Paywall price copy: show “$10 — one-time payment / For 7 days just $8” + tangible line | ✅ Done |
+| Dashboard: quick file-type filter chips (All/Images/PDF/Word/Excel/Other) | ✅ Done |
+| Settings: add “Privacy & Offline” proof screen | ✅ Done |
+| In-app PDF viewer (baseline via WebView) | ✅ Done |
+| Multi-page scan → single PDF flow (Pro gated) | ✅ Done |
+| OCR search: store `ocr_text`, include in search (toggle in Settings) | ✅ Done |
+| Lightweight toast feedback after key actions (delete/move/duplicate/bulk) | ✅ Done |
+
+---
+
+## 6. Current state (summary)
 
 - **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript).
-- **Done:** Categories, documents (images/PDF), capture + multi-file import, import-review, tags, search/sort, selection mode, bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, backup/restore, Pro/paywall UI.
-- **Possible next:**  further Pro/IAP or UX tweaks (see product backlog) .
+- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, intro pricing + paywall/quiz UX, privacy screen, toasts.
+- **Notes:** OCR requires a dev build / native module to run; in Expo Go it will auto-disable and fall back to title/notes/tag search.
+- **Possible next:** OCR for PDFs, better PDF rendering, multi-page editing/reorder, and deeper AI-optional export UX.

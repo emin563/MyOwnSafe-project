@@ -6,6 +6,7 @@ import { initDb } from '@/db/schema';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import { LockScreen } from '@/components/security/LockScreen';
+import { Toast } from '@/components/ui';
 import {
   configureNotifications,
   requestNotificationPermissions,
@@ -22,6 +23,8 @@ export default function RootLayout() {
     pinEnabled,
     biometricEnabled,
     setUnlocked,
+    toast,
+    clearToast,
   } = useAppStore();
 
   const appState = useRef<AppStateStatus>(AppState.currentState);
@@ -122,12 +125,34 @@ export default function RootLayout() {
             animation: 'slide_from_right',
           }}
         />
+        <Stack.Screen
+          name="pdf-viewer"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen
+          name="privacy-offline"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+          }}
+        />
       </Stack>
 
       {showLock && (
         <View style={StyleSheet.absoluteFill}>
           <LockScreen onUnlock={() => setUnlocked(true)} />
         </View>
+      )}
+
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onDone={clearToast}
+        />
       )}
     </>
   );

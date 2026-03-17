@@ -14,8 +14,19 @@ type CloudTrustAnswer = 'trust' | 'unsure' | 'dont_trust' | null;
 type ControlAnswer = 'low' | 'medium' | 'high' | null;
 type PaymentsAnswer = 'yes' | 'no' | 'unknown' | null;
 type ValueAnswer = 'worth_it' | 'unsure' | 'expensive' | null;
+type AiScannerUsedAnswer = 'yes' | 'no' | 'not_sure' | null;
+type AiScannerDislikeAnswer = 'sub_cost' | 'sensitive_uploads' | 'ads_tracking' | 'complexity' | null;
 
-type StepId = 'storage' | 'cloudTrust' | 'control' | 'payments' | 'value' | 'model' | 'cta';
+type StepId =
+  | 'storage'
+  | 'cloudTrust'
+  | 'control'
+  | 'payments'
+  | 'value'
+  | 'aiScannerUsed'
+  | 'aiScannerDislike'
+  | 'model'
+  | 'cta';
 
 const STEP_ORDER: StepId[] = [
   'storage',
@@ -23,6 +34,8 @@ const STEP_ORDER: StepId[] = [
   'control',
   'payments',
   'value',
+  'aiScannerUsed',
+  'aiScannerDislike',
   'model',
   'cta',
 ];
@@ -34,6 +47,8 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
   const [controlAnswer, setControlAnswer] = useState<ControlAnswer>(null);
   const [paymentsAnswer, setPaymentsAnswer] = useState<PaymentsAnswer>(null);
   const [valueAnswer, setValueAnswer] = useState<ValueAnswer>(null);
+  const [aiScannerUsedAnswer, setAiScannerUsedAnswer] = useState<AiScannerUsedAnswer>(null);
+  const [aiScannerDislikeAnswer, setAiScannerDislikeAnswer] = useState<AiScannerDislikeAnswer>(null);
 
   const currentStep = STEP_ORDER[stepIndex];
 
@@ -42,6 +57,9 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
       return true;
     }
     if (id === 'value' && paymentsAnswer !== 'yes') {
+      return true;
+    }
+    if (id === 'aiScannerDislike' && aiScannerUsedAnswer !== 'yes') {
       return true;
     }
     return false;
@@ -91,6 +109,10 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
         return 'Do you currently pay monthly or yearly fees for storage or document apps?';
       case 'value':
         return 'Do you feel the service you are paying for is worth the ongoing cost?';
+      case 'aiScannerUsed':
+        return 'Have you used AI-powered scanner apps?';
+      case 'aiScannerDislike':
+        return 'What did you dislike most?';
       case 'model':
         return 'Imagine a different model:';
       case 'cta':
@@ -102,8 +124,10 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
 
   const modelDescription =
     'All your documents are stored only on your device, fully offline.\n' +
+    'You can keep your vault offline and export a copy to any AI app only when needed. No recurring subscription required.\n' +
     'You pay once for Pro. No subscriptions, ever.\n' +
-    'You remove the 3-file and 3-category limits and can store as much as you want.';
+    'Free includes core vault features and export. Pro removes limits (25 documents, 5 categories, 25 tags).\n' +
+    'You also unlock backup & restore, bulk actions, duplicate, and Pro scan/PDF tools.';
 
   const hasSelection = (() => {
     switch (currentStep) {
@@ -117,6 +141,10 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
         return paymentsAnswer !== null;
       case 'value':
         return valueAnswer !== null;
+      case 'aiScannerUsed':
+        return aiScannerUsedAnswer !== null;
+      case 'aiScannerDislike':
+        return aiScannerDislikeAnswer !== null;
       case 'model':
         return true; // model step just presents info with options right below
       default:
@@ -226,6 +254,53 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
             label="Not really, it feels expensive"
             selected={valueAnswer === 'expensive'}
             onPress={() => setValueAnswer('expensive')}
+          />
+        </>
+      );
+    }
+    if (currentStep === 'aiScannerUsed') {
+      return (
+        <>
+          <QuizOption
+            label="Yes"
+            selected={aiScannerUsedAnswer === 'yes'}
+            onPress={() => setAiScannerUsedAnswer('yes')}
+          />
+          <QuizOption
+            label="No"
+            selected={aiScannerUsedAnswer === 'no'}
+            onPress={() => setAiScannerUsedAnswer('no')}
+          />
+          <QuizOption
+            label="Not sure"
+            selected={aiScannerUsedAnswer === 'not_sure'}
+            onPress={() => setAiScannerUsedAnswer('not_sure')}
+          />
+        </>
+      );
+    }
+    if (currentStep === 'aiScannerDislike') {
+      return (
+        <>
+          <QuizOption
+            label="Subscription cost"
+            selected={aiScannerDislikeAnswer === 'sub_cost'}
+            onPress={() => setAiScannerDislikeAnswer('sub_cost')}
+          />
+          <QuizOption
+            label="Uploading sensitive docs"
+            selected={aiScannerDislikeAnswer === 'sensitive_uploads'}
+            onPress={() => setAiScannerDislikeAnswer('sensitive_uploads')}
+          />
+          <QuizOption
+            label="Ads & tracking"
+            selected={aiScannerDislikeAnswer === 'ads_tracking'}
+            onPress={() => setAiScannerDislikeAnswer('ads_tracking')}
+          />
+          <QuizOption
+            label="Complexity"
+            selected={aiScannerDislikeAnswer === 'complexity'}
+            onPress={() => setAiScannerDislikeAnswer('complexity')}
           />
         </>
       );

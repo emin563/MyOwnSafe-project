@@ -23,6 +23,14 @@ import { getDocumentById } from '@/db/documents';
 import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { exportDocumentAsPdf } from '@/services/PdfService';
+import { AiEducationSheet, AiShareDisclaimerModal } from '@/components/ui';
+import { LimitReachedDialog } from '@/components/ui';
+import {
+  markAiShareDisclaimerShownThisSession,
+  setAiShareDisclaimerDismissed,
+  shouldShowAiShareDisclaimer,
+} from '@/services/AiOptionalWorkflow';
+import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category, FileType, Tag } from '@/db/types';
 
@@ -43,6 +51,7 @@ export default function DocumentEditorScreen() {
     editDocument,
     removeDocument,
     duplicateDocument,
+    showToast,
     tagDocument,
     untagDocument,
     getOrCreateTag,
@@ -65,6 +74,9 @@ export default function DocumentEditorScreen() {
   const [tagPickerVisible, setTagPickerVisible] = useState(false);
   const [newTagName, setNewTagName] = useState('');
   const [duplicating, setDuplicating] = useState(false);
+  const [aiSheetVisible, setAiSheetVisible] = useState(false);
+  const [aiDisclaimerVisible, setAiDisclaimerVisible] = useState(false);
+  const [limitVisible, setLimitVisible] = useState(false);
 
   useEffect(() => {
     if (!isNew) {
@@ -113,7 +125,21 @@ export default function DocumentEditorScreen() {
     setSaving(true);
     try {
       if (isNew) {
-        await addDocument(title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
+        const newId = await addDocument(
+          title.trim(),
+          fileUri,
+          fileType,
+          categoryId,
+          price,
+          expiry,
+          notes.trim() || null
+        );
+        // If tags were selected before saving, attach them now.
+        if (documentTags.length > 0) {
+          for (const tag of documentTags) {
+            await tagDocument(newId, tag.id);
+          }
+        }
       } else {
         await editDocument(Number(id), title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
       }
@@ -133,6 +159,38 @@ export default function DocumentEditorScreen() {
       await Sharing.shareAsync(fileUri);
     } catch {
       // ignore
+    }
+  };
+
+  const openNativeShare = async () => {
+    if (!fileUri) return;
+    try {
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) return;
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await Sharing.shareAsync(fileUri, { dialogTitle: 'Share to AI' });
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleShareToAi = async () => {
+    if (!fileUri) return;
+    setAiSheetVisible(true);
+  };
+
+  const continueAiShare = async () => {
+    setAiSheetVisible(false);
+    try {
+      const shouldShow = await shouldShowAiShareDisclaimer();
+      if (shouldShow) {
+        markAiShareDisclaimerShownThisSession();
+        setAiDisclaimerVisible(true);
+        return;
+      }
+      await openNativeShare();
+    } catch {
+      await openNativeShare();
     }
   };
 
@@ -175,6 +233,7 @@ export default function DocumentEditorScreen() {
               await deleteFileFromArchive(fileUri);
               await removeDocument(Number(id));
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              showToast('Document deleted', 'success');
               router.back();
             } catch {
               Alert.alert('Error', 'Could not delete the document.');
@@ -192,6 +251,7 @@ export default function DocumentEditorScreen() {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const newId = await duplicateDocument(Number(id));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showToast('Document duplicated', 'success');
       router.replace(`/document/${newId}`);
     } catch {
       Alert.alert('Error', 'Could not duplicate the document.');
@@ -235,7 +295,9 @@ export default function DocumentEditorScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-down" size={24} color={Colors.text} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{isNew ? 'New Document' : 'Edit Document'}</Text>
+          <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
+            {isNew ? 'New Document' : 'Edit Document'}
+          </Text>
           <View style={styles.headerRight}>
             {!isNew && (
               <TouchableOpacity
@@ -254,6 +316,9 @@ export default function DocumentEditorScreen() {
             ) : null}
             {fileUri ? (
               <>
+                <TouchableOpacity onPress={handleShareToAi} style={styles.headerBtn} activeOpacity={0.7}>
+                  <Ionicons name="sparkles-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
                 <TouchableOpacity onPress={handleOpenIn} style={styles.headerBtn} activeOpacity={0.7}>
                   <Ionicons name="open-outline" size={20} color={Colors.text} />
                 </TouchableOpacity>
@@ -285,8 +350,13 @@ export default function DocumentEditorScreen() {
           {fileUri ? (
             <TouchableOpacity
               style={styles.previewContainer}
-              onPress={() => fileType === 'image' && setPreviewVisible(true)}
-              activeOpacity={fileType === 'image' ? 0.8 : 1}
+              onPress={() => {
+                if (fileType === 'image') setPreviewVisible(true);
+                if (fileType === 'pdf' && fileUri) {
+                  router.push({ pathname: '/pdf-viewer', params: { uri: fileUri, title } });
+                }
+              }}
+              activeOpacity={fileType === 'image' || fileType === 'pdf' ? 0.8 : 1}
             >
               {fileType === 'image' ? (
                 <Image
@@ -325,7 +395,9 @@ export default function DocumentEditorScreen() {
                           ? 'Document'
                           : 'PDF Document'}
                   </Text>
-                  <Text style={styles.pdfPreviewHint}>Tap share or Open in to view</Text>
+                  <Text style={styles.pdfPreviewHint}>
+                    {fileType === 'pdf' ? 'Tap to view' : 'Tap share or Open in to view'}
+                  </Text>
                 </View>
               )}
               {fileType === 'image' && (
@@ -370,38 +442,38 @@ export default function DocumentEditorScreen() {
             <View style={styles.fieldRow}>
               <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
               <Text style={styles.fieldText}>Tags</Text>
-              {!isNew && (
-                <TouchableOpacity
-                  style={styles.addTagBtn}
-                  onPress={() => {
-                    setTagPickerVisible(true);
-                    setNewTagName('');
-                    loadTags();
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="add" size={16} color={Colors.primary} />
-                  <Text style={styles.addTagBtnText}>Add tag</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={styles.addTagBtn}
+                onPress={() => {
+                  setTagPickerVisible(true);
+                  setNewTagName('');
+                  loadTags();
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="add" size={16} color={Colors.primary} />
+                <Text style={styles.addTagBtnText}>Add tag</Text>
+              </TouchableOpacity>
             </View>
             {documentTags.length > 0 && (
               <View style={styles.tagChipsRow}>
                 {documentTags.map((tag) => (
                   <View key={tag.id} style={styles.tagChip}>
                     <Text style={styles.tagChipText} numberOfLines={1}>{tag.name}</Text>
-                    {!isNew && (
-                      <TouchableOpacity
-                        hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                        onPress={async () => {
-                          await untagDocument(Number(id), tag.id);
-                          const updated = await getTagsForDocument(Number(id));
-                          setDocumentTags(updated);
-                        }}
-                      >
-                        <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
-                      </TouchableOpacity>
-                    )}
+                    <TouchableOpacity
+                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                      onPress={async () => {
+                        if (isNew) {
+                          setDocumentTags((prev) => prev.filter((t) => t.id !== tag.id));
+                          return;
+                        }
+                        await untagDocument(Number(id), tag.id);
+                        const updated = await getTagsForDocument(Number(id));
+                        setDocumentTags(updated);
+                      }}
+                    >
+                      <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
+                    </TouchableOpacity>
                   </View>
                 ))}
               </View>
@@ -515,16 +587,27 @@ export default function DocumentEditorScreen() {
               selectionColor={Colors.primary}
               onSubmitEditing={async () => {
                 const trimmed = newTagName.trim();
-                if (!trimmed || isNew) return;
+                if (!trimmed) return;
                 try {
                   const tagId = await getOrCreateTag(trimmed);
-                  await tagDocument(Number(id), tagId);
-                  const updated = await getTagsForDocument(Number(id));
-                  setDocumentTags(updated);
+                  if (isNew) {
+                    setDocumentTags((prev) => {
+                      if (prev.some((t) => t.id === tagId)) return prev;
+                      return [...prev, { id: tagId, name: trimmed, created_at: new Date().toISOString() } as any];
+                    });
+                  } else {
+                    await tagDocument(Number(id), tagId);
+                    const updated = await getTagsForDocument(Number(id));
+                    setDocumentTags(updated);
+                  }
                   setTagPickerVisible(false);
                   setNewTagName('');
                   await loadTags();
-                } catch {
+                } catch (e) {
+                  if (isLimitError(e)) {
+                    setLimitVisible(true);
+                    return;
+                  }
                   // ignore
                 }
               }}
@@ -537,7 +620,11 @@ export default function DocumentEditorScreen() {
                 <TouchableOpacity
                   style={pickerStyles.item}
                   onPress={async () => {
-                    if (isNew) return;
+                    if (isNew) {
+                      setDocumentTags((prev) => (prev.some((t) => t.id === item.id) ? prev : [...prev, item]));
+                      setTagPickerVisible(false);
+                      return;
+                    }
                     await tagDocument(Number(id), item.id);
                     const updated = await getTagsForDocument(Number(id));
                     setDocumentTags(updated);
@@ -576,6 +663,39 @@ export default function DocumentEditorScreen() {
           />
         </View>
       </Modal>
+
+      <AiEducationSheet
+        visible={aiSheetVisible}
+        onCancel={() => setAiSheetVisible(false)}
+        onContinue={continueAiShare}
+      />
+
+      <AiShareDisclaimerModal
+        visible={aiDisclaimerVisible}
+        onCancel={() => setAiDisclaimerVisible(false)}
+        onContinue={async (dontShowAgain) => {
+          try {
+            if (dontShowAgain) {
+              await setAiShareDisclaimerDismissed(true);
+            }
+          } catch {
+            // ignore
+          } finally {
+            setAiDisclaimerVisible(false);
+            await openNativeShare();
+          }
+        }}
+      />
+
+      <LimitReachedDialog
+        visible={limitVisible}
+        kind="tags"
+        onClose={() => setLimitVisible(false)}
+        onUpgrade={async () => {
+          await useAppStore.getState().setIsPro(true);
+        }}
+        onManage={() => router.replace('/(drawer)')}
+      />
     </SafeAreaView>
   );
 }
