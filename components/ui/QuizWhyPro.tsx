@@ -126,7 +126,7 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
     'All your documents are stored only on your device, fully offline.\n' +
     'You can keep your vault offline and export a copy to any AI app only when needed. No recurring subscription required.\n' +
     'You pay once for Pro. No subscriptions, ever.\n' +
-    'Free includes core vault features and export. Pro removes limits (25 documents, 5 categories, 25 tags).\n' +
+    'Free includes core vault features and export. Pro removes limits (25 documents, 5 categories, 10 tags).\n' +
     'You also unlock backup & restore, bulk actions, duplicate, and Pro scan/PDF tools.';
 
   const hasSelection = (() => {

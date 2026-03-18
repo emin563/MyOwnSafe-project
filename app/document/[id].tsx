@@ -23,13 +23,8 @@ import { getDocumentById } from '@/db/documents';
 import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { exportDocumentAsPdf } from '@/services/PdfService';
-import { AiEducationSheet, AiShareDisclaimerModal } from '@/components/ui';
+import { UseAiWorkflowSheet } from '@/components/ui';
 import { LimitReachedDialog } from '@/components/ui';
-import {
-  markAiShareDisclaimerShownThisSession,
-  setAiShareDisclaimerDismissed,
-  shouldShowAiShareDisclaimer,
-} from '@/services/AiOptionalWorkflow';
 import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Category, FileType, Tag } from '@/db/types';
@@ -75,7 +70,6 @@ export default function DocumentEditorScreen() {
   const [newTagName, setNewTagName] = useState('');
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
-  const [aiDisclaimerVisible, setAiDisclaimerVisible] = useState(false);
   const [limitVisible, setLimitVisible] = useState(false);
 
   useEffect(() => {
@@ -162,36 +156,9 @@ export default function DocumentEditorScreen() {
     }
   };
 
-  const openNativeShare = async () => {
-    if (!fileUri) return;
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(fileUri, { dialogTitle: 'Share to AI' });
-    } catch {
-      // ignore
-    }
-  };
-
   const handleShareToAi = async () => {
     if (!fileUri) return;
     setAiSheetVisible(true);
-  };
-
-  const continueAiShare = async () => {
-    setAiSheetVisible(false);
-    try {
-      const shouldShow = await shouldShowAiShareDisclaimer();
-      if (shouldShow) {
-        markAiShareDisclaimerShownThisSession();
-        setAiDisclaimerVisible(true);
-        return;
-      }
-      await openNativeShare();
-    } catch {
-      await openNativeShare();
-    }
   };
 
   const handleOpenIn = async () => {
@@ -664,27 +631,16 @@ export default function DocumentEditorScreen() {
         </View>
       </Modal>
 
-      <AiEducationSheet
+      <UseAiWorkflowSheet
         visible={aiSheetVisible}
-        onCancel={() => setAiSheetVisible(false)}
-        onContinue={continueAiShare}
-      />
-
-      <AiShareDisclaimerModal
-        visible={aiDisclaimerVisible}
-        onCancel={() => setAiDisclaimerVisible(false)}
-        onContinue={async (dontShowAgain) => {
-          try {
-            if (dontShowAgain) {
-              await setAiShareDisclaimerDismissed(true);
-            }
-          } catch {
-            // ignore
-          } finally {
-            setAiDisclaimerVisible(false);
-            await openNativeShare();
-          }
+        onClose={() => setAiSheetVisible(false)}
+        document={{
+          id: isNew ? -1 : Number(id),
+          title: title.trim() ? title.trim() : isNew ? 'Untitled' : title,
+          fileType,
+          categoryName: selectedCategory?.name ?? null,
         }}
+        fileUri={fileUri}
       />
 
       <LimitReachedDialog

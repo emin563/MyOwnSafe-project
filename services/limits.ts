@@ -1,7 +1,7 @@
 export const FREE_LIMITS = {
   documents: 25,
   categories: 5,
-  tags: 25,
+  tags: 10,
 } as const;
 
 export type LimitKind = keyof typeof FREE_LIMITS;

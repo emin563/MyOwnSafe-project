@@ -98,7 +98,23 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 
 ## 6. Current state (summary)
 
-- **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript).
+- **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
 - **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, intro pricing + paywall/quiz UX, privacy screen, toasts.
-- **Notes:** OCR requires a dev build / native module to run; in Expo Go it will auto-disable and fall back to title/notes/tag search.
+- **Notes:** OCR requires a dev build / native module to run; in Expo Go it will auto-disable and fall back to title/notes/tag search. PDF viewer is implemented as an in-app baseline viewer (Android-first).
 - **Possible next:** OCR for PDFs, better PDF rendering, multi-page editing/reorder, and deeper AI-optional export UX.
+
+---
+
+## 7. AI Optional Workflow Upgrade (“Use AI when you want”)
+
+**Plan:** `.cursor/plans/ai_workflow_upgrade_798680b0.plan.md`  
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| Add curated AI destinations picker (ChatGPT/Gemini/Claude/Copilot + “More…” fallback) | ✅ Done |
+| Add privacy disclaimer near share step (optional “don’t show again”) | ✅ Done |
+| Add prompt library UI (search + category chips + prompt cards) | ✅ Done |
+| Add 100 curated prompt templates with placeholders | ✅ Done |
+| Wire “Use AI” entry points (DocumentCard + document editor) | ✅ Done |
+| **Gating: 1 Free prompt per category, others Pro** | ✅ Done |

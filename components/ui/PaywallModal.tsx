@@ -24,7 +24,7 @@ type Props = {
 const BENEFITS = [
   {
     title: 'Unlimited Storage:',
-    description: 'Remove Free limits (25 documents, 5 categories, 25 tags).',
+    description: 'Remove Free limits (25 documents, 5 categories, 10 tags).',
   },
   {
     title: 'Works Fully Offline:',

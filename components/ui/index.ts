@@ -9,3 +9,6 @@ export { Toast } from './Toast';
 export { AiEducationSheet } from './AiEducationSheet';
 export { AiShareDisclaimerModal } from './AiShareDisclaimerModal';
 export { LimitReachedDialog } from './LimitReachedDialog';
+export { PromptTemplateSheet } from './PromptTemplateSheet';
+export { AiDestinationSheet } from './AiDestinationSheet';
+export { UseAiWorkflowSheet } from './UseAiWorkflowSheet';

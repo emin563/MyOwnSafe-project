@@ -15,13 +15,8 @@ import * as Sharing from 'expo-sharing';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
-import { AiEducationSheet, AiShareDisclaimerModal, ConfirmModal } from '@/components/ui';
+import { ConfirmModal, UseAiWorkflowSheet } from '@/components/ui';
 import { LimitReachedDialog } from '@/components/ui';
-import {
-  markAiShareDisclaimerShownThisSession,
-  setAiShareDisclaimerDismissed,
-  shouldShowAiShareDisclaimer,
-} from '@/services/AiOptionalWorkflow';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document } from '@/db/types';
 import type { Tag } from '@/db/types';
@@ -50,7 +45,6 @@ export function DocumentCard({
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
-  const [aiDisclaimerVisible, setAiDisclaimerVisible] = useState(false);
   const [duplicateGateVisible, setDuplicateGateVisible] = useState(false);
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
 
@@ -69,34 +63,8 @@ export function DocumentCard({
     }
   };
 
-  const openNativeShare = async () => {
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(document.file_uri, { dialogTitle: 'Share to AI' });
-    } catch {
-      // Ignore
-    }
-  };
-
   const handleShareToAi = async () => {
     setAiSheetVisible(true);
-  };
-
-  const continueAiShare = async () => {
-    setAiSheetVisible(false);
-    try {
-      const shouldShow = await shouldShowAiShareDisclaimer();
-      if (shouldShow) {
-        markAiShareDisclaimerShownThisSession();
-        setAiDisclaimerVisible(true);
-        return;
-      }
-      await openNativeShare();
-    } catch {
-      await openNativeShare();
-    }
   };
 
   const handleOpenIn = async () => {
@@ -325,7 +293,7 @@ export function DocumentCard({
           <View style={styles.actions}>
             <TouchableOpacity style={styles.actionBtn} onPress={handleShareToAi} activeOpacity={0.7}>
               <Ionicons name="sparkles-outline" size={15} color={Colors.textSecondary} />
-              <Text style={styles.actionText}>Share to AI</Text>
+              <Text style={styles.actionText}>Use AI</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.actionBtn} onPress={handleShare} activeOpacity={0.7}>
               <Ionicons name="share-outline" size={15} color={Colors.textSecondary} />
@@ -395,27 +363,16 @@ export function DocumentCard({
         }}
       />
 
-      <AiEducationSheet
+      <UseAiWorkflowSheet
         visible={aiSheetVisible}
-        onCancel={() => setAiSheetVisible(false)}
-        onContinue={continueAiShare}
-      />
-
-      <AiShareDisclaimerModal
-        visible={aiDisclaimerVisible}
-        onCancel={() => setAiDisclaimerVisible(false)}
-        onContinue={async (dontShowAgain) => {
-          try {
-            if (dontShowAgain) {
-              await setAiShareDisclaimerDismissed(true);
-            }
-          } catch {
-            // ignore
-          } finally {
-            setAiDisclaimerVisible(false);
-            await openNativeShare();
-          }
+        onClose={() => setAiSheetVisible(false)}
+        document={{
+          id: document.id,
+          title: document.title,
+          fileType: document.file_type,
+          categoryName: category?.name ?? null,
         }}
+        fileUri={document.file_uri}
       />
 
       <Modal visible={moveModalVisible} transparent animationType="slide" onRequestClose={() => setMoveModalVisible(false)}>
