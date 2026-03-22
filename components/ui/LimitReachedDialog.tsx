@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
-import { Modal, View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { router } from 'expo-router';
+import type { LimitKind } from '@/services/limits';
+import { getLimitReachedCopy } from '@/services/limits';
+import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { router } from 'expo-router';
+import React, { useState } from 'react';
+import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { PaywallModal } from './PaywallModal';
 import { QuizWhyPro } from './QuizWhyPro';
-import type { LimitKind } from '@/services/limits';
-import { getFreeLimit } from '@/services/limits';
 
 type Props = {
   visible: boolean;
@@ -20,10 +21,9 @@ type Props = {
 export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage }: Props) {
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
+  const isIntroEligible = useAppStore((s) => s.isIntroEligible);
 
-  const limit = getFreeLimit(kind);
-  const noun =
-    kind === 'documents' ? 'documents' : kind === 'categories' ? 'categories' : 'tags';
+  const copy = getLimitReachedCopy(kind);
 
   return (
     <>
@@ -39,13 +39,9 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
       >
         <View style={styles.limitOverlay}>
           <View style={styles.limitCard}>
-            <Text style={styles.limitTitle}>Limit reached</Text>
-            <Text style={styles.limitBody}>
-              You&apos;ve reached the free limit for {noun} ({limit}).
-            </Text>
-            <Text style={styles.limitBodySecondary}>
-              You can delete some items or upgrade to Pro to remove limits.
-            </Text>
+            <Text style={styles.limitTitle}>{copy.title}</Text>
+            <Text style={styles.limitBody}>{copy.body}</Text>
+            <Text style={styles.limitBodySecondary}>{copy.footnote}</Text>
 
             <View style={styles.limitButtons}>
               <TouchableOpacity
@@ -57,9 +53,15 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
                 }}
                 activeOpacity={0.8}
               >
-                <Text style={styles.limitPrimaryText}>Get Pro – one-time payment</Text>
+                <Text style={styles.limitPrimaryText}>Unlock Pro (One-time)</Text>
               </TouchableOpacity>
-              <Text style={styles.limitTangible}>About the price of a lunch — one-time, no subscription.</Text>
+              <Text style={styles.limitTangible}>
+                {isIntroEligible ? (
+                  '$8 intro for 7 days, then $10 (one-time). No recurring fees.'
+                ) : (
+                  'One-time purchase. No subscription. No recurring fees.'
+                )}
+              </Text>
 
               <TouchableOpacity
                 style={styles.limitSecondaryBtn}
@@ -71,7 +73,9 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
                 }}
                 activeOpacity={0.8}
               >
-                <Text style={styles.limitSecondaryText}>Manage / Delete</Text>
+                <Text style={styles.limitSecondaryText}>
+                  {kind === 'documents' ? 'Free a slot (delete or merge)' : 'Free a slot or manage in drawer'}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -79,7 +83,7 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
                 onPress={() => setShowWhyPro(true)}
                 activeOpacity={0.7}
               >
-                <Text style={styles.limitTertiaryText}>Why should I get Pro?</Text>
+                <Text style={styles.limitTertiaryText}>Why Pro? (Quick quiz)</Text>
               </TouchableOpacity>
             </View>
           </View>

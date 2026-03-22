@@ -1,3 +1,4 @@
+import { beginShareTrace } from '@/services/shareTrace';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as LegacyFS from 'expo-file-system/legacy';
@@ -10,38 +11,57 @@ export async function createPdfFromImages(imageUris: string[]): Promise<string> 
       const b64 = await LegacyFS.readAsStringAsync(uri, { encoding: LegacyFS.EncodingType.Base64 });
       base64Images.push(b64);
     } catch {
-      // skip unreadable images
+      // Skip unreadable images.
     }
   }
 
   const pagesHtml = base64Images
     .map(
-      (b64, idx) => `
-        <div class="page">
-          <img src="data:image/jpeg;base64,${b64}" />
-        </div>
-        ${idx < base64Images.length - 1 ? '<div class="page-break"></div>' : ''}
-      `
+      (b64) => `
+      <div class="page">
+        <img src="data:image/jpeg;base64,${b64}" />
+      </div>
+    `
     )
     .join('\n');
 
   const html = `<!DOCTYPE html>
-  <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { background: #fff; }
-      .page { width: 100%; padding: 18px; }
-      .page img { width: 100%; height: auto; object-fit: contain; }
-      .page-break { page-break-after: always; }
-    </style>
-  </head>
-  <body>
-    ${pagesHtml}
-  </body>
-  </html>`;
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #fff; }
+    @page { margin: 0; }
+
+    .page {
+      width: 100%;
+      height: 100vh;
+      padding: 0;
+      page-break-after: always;
+      break-after: page;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .page:last-child {
+      page-break-after: auto;
+      break-after: auto;
+    }
+    .page img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  ${pagesHtml}
+</body>
+</html>`;
 
   const { uri } = await Print.printToFileAsync({ html, base64: false });
   return uri;
@@ -237,10 +257,15 @@ export async function exportDocumentAsPdf(
 
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(pdfUri, {
-      mimeType: 'application/pdf',
-      UTI: 'com.adobe.pdf',
-      dialogTitle: `Export "${doc.title}"`,
-    });
+    const endTrace = beginShareTrace('PdfService.exportDocumentAsPdf', 'H5');
+    try {
+      await Sharing.shareAsync(pdfUri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: `Export "${doc.title}"`,
+      });
+    } finally {
+      endTrace();
+    }
   }
 }

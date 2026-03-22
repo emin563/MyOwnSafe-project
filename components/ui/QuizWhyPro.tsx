@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
+import React, { useMemo, useState } from 'react';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { PillButton } from './PillButton';
 
 type Props = {
@@ -114,7 +114,7 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
       case 'aiScannerDislike':
         return 'What did you dislike most?';
       case 'model':
-        return 'Imagine a different model:';
+        return "What's blocking you right now?";
       case 'cta':
         return 'What would you like to do next?';
       default:
@@ -123,11 +123,9 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
   })();
 
   const modelDescription =
-    'All your documents are stored only on your device, fully offline.\n' +
-    'You can keep your vault offline and export a copy to any AI app only when needed. No recurring subscription required.\n' +
-    'You pay once for Pro. No subscriptions, ever.\n' +
-    'Free includes core vault features and export. Pro removes limits (25 documents, 5 categories, 10 tags).\n' +
-    'You also unlock backup & restore, bulk actions, duplicate, and Pro scan/PDF tools.';
+    'Pro removes the free limits (25 documents, 5 categories, 10 tags) so you can keep adding right now.\n' +
+    'One-time purchase. No subscription, no recurring fees.\n' +
+    'Your vault stays on your device, and you can export a copy to any AI app when you want.';
 
   const hasSelection = (() => {
     switch (currentStep) {
@@ -311,12 +309,12 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
           <Text style={styles.modelText}>{modelDescription}</Text>
           <View style={styles.modelOptions}>
             <QuizOption
-              label="Exactly what I’m looking for"
+              label="Unlock Pro (One-time)"
               selected={false}
               onPress={onUpgrade}
             />
             <QuizOption
-              label="Sounds good"
+              label="Remove my limits now"
               selected={false}
               onPress={onUpgrade}
             />
@@ -341,21 +339,20 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
     return (
       <View style={styles.ctaContainer}>
         <PillButton
-          label="Unlock Pro and remove limits"
+          label="Unlock Pro (One-time) — remove limits now"
           variant="primary"
           size="lg"
           onPress={onUpgrade}
           style={styles.ctaPrimary}
         />
         <PillButton
-          label="Maybe later, keep using Free"
+          label="Not now — keep using Free"
           variant="ghost"
           size="md"
           onPress={onClose || (() => {})}
         />
         <Text style={styles.ctaHint}>
-          You can upgrade anytime from Settings. Your existing documents always stay safe on your
-          device.
+          You can upgrade anytime from Settings. Your existing documents stay on your device.
         </Text>
       </View>
     );

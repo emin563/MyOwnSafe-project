@@ -240,6 +240,7 @@ export default function ImportReviewScreen() {
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
           await useAppStore.getState().setIsPro(true);
+          await handleAddAll();
         }}
         onManage={() => router.replace('/(drawer)')}
       />

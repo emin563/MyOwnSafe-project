@@ -1,17 +1,18 @@
+import { FREE_TIER_ONE_LINERS, PRO_ONLY_FEATURES } from '@/services/limits';
+import { useAppStore } from '@/store/app-store';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
-  Modal,
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  Pressable,
+    Modal,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { useAppStore } from '@/store/app-store';
 
 type Props = {
   visible: boolean;
@@ -24,7 +25,7 @@ type Props = {
 const BENEFITS = [
   {
     title: 'Unlimited Storage:',
-    description: 'Remove Free limits (25 documents, 5 categories, 10 tags).',
+    description: 'Remove Free limits (25 files, 5 custom categories, 10 tags, unlimited photo text reads).',
   },
   {
     title: 'Works Fully Offline:',
@@ -41,6 +42,10 @@ const BENEFITS = [
   {
     title: 'Bulk Actions:',
     description: 'Select multiple documents to delete, move, tag, or zip-share.',
+  },
+  {
+    title: 'Text from photos:',
+    description: 'Read and copy text from receipts and labels—unlimited with Pro (5 free tries on Free).',
   },
   {
     title: 'Advanced Sort & Filter:',
@@ -95,6 +100,19 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
             Is your data in the cloud or under your control?
           </Text>
 
+          <Text style={styles.freeBlockTitle}>What you get on Free (no surprises)</Text>
+          {FREE_TIER_ONE_LINERS.map((line, i) => (
+            <Text key={`free-${i}`} style={styles.freeBlockLine}>
+              • {line}
+            </Text>
+          ))}
+          <Text style={styles.freeBlockSub}>Pro-only on Free (one-time unlock removes these gates):</Text>
+          {PRO_ONLY_FEATURES.map((line, i) => (
+            <Text key={`pro-${i}`} style={styles.freeBlockLineMuted}>
+              • {line}
+            </Text>
+          ))}
+
           <Text style={styles.plusIntro}>Everything in Free, Plus:</Text>
           <View style={styles.benefits}>
             {BENEFITS.map((item, idx) => (
@@ -128,7 +146,7 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
             style={({ pressed }) => [styles.upgradeBtn, pressed && styles.upgradeBtnPressed]}
             onPress={onUpgrade}
           >
-            <Text style={styles.upgradeBtnText}>Upgrade for Lifetime Access</Text>
+            <Text style={styles.upgradeBtnText}>Unlock Pro (One-time)</Text>
           </Pressable>
 
           {onRestore && (
@@ -183,7 +201,31 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontSize: Typography.fontSizeBase,
     textAlign: 'center',
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
+  },
+  freeBlockTitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.sm,
+  },
+  freeBlockSub: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.xs,
+  },
+  freeBlockLine: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
+    marginBottom: Spacing.xs,
+  },
+  freeBlockLineMuted: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 18,
+    marginBottom: 4,
   },
   plusIntro: {
     color: Colors.textSecondary,

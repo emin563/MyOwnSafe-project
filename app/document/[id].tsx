@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,9 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
+import * as Clipboard from 'expo-clipboard';
 import { useLocalSearchParams, router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
 import { getDocumentById } from '@/db/documents';
@@ -24,9 +26,11 @@ import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { exportDocumentAsPdf } from '@/services/PdfService';
 import { UseAiWorkflowSheet } from '@/components/ui';
-import { LimitReachedDialog } from '@/components/ui';
+import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
+import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { FREE_OCR_READ_TRIALS, getOcrReadTrialsRemaining } from '@/services/limits';
 import type { Category, FileType, Tag } from '@/db/types';
 
 export default function DocumentEditorScreen() {
@@ -50,6 +54,9 @@ export default function DocumentEditorScreen() {
     tagDocument,
     untagDocument,
     getOrCreateTag,
+    ocrExtractOnCapture,
+    isPro,
+    ocrReadTrialsUsed,
   } = useAppStore();
 
   const [title, setTitle] = useState('');
@@ -61,6 +68,10 @@ export default function DocumentEditorScreen() {
   const [purchasePrice, setPurchasePrice] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [notes, setNotes] = useState('');
+  /** Recognized text from image (OCR); null = not loaded or not yet captured */
+  const [ocrText, setOcrText] = useState<string | null>(null);
+  /** True while we poll DB for OCR after save (async OCR may finish seconds later) */
+  const [ocrAwaiting, setOcrAwaiting] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [categoryPickerVisible, setCategoryPickerVisible] = useState(false);
@@ -71,14 +82,13 @@ export default function DocumentEditorScreen() {
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
   const [limitVisible, setLimitVisible] = useState(false);
+  const [pendingNewTagName, setPendingNewTagName] = useState<string | null>(null);
+  const [ocrPaywallVisible, setOcrPaywallVisible] = useState(false);
 
-  useEffect(() => {
-    if (!isNew) {
-      loadDocument();
-    }
-  }, [id]);
+  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed);
+  const ocrQuotaBlocked = !isPro && ocrReadTrialsUsed >= FREE_OCR_READ_TRIALS;
 
-  const loadDocument = async () => {
+  const loadDocument = useCallback(async () => {
     const doc = await getDocumentById(Number(id));
     if (doc) {
       setTitle(doc.title);
@@ -88,10 +98,74 @@ export default function DocumentEditorScreen() {
       setPurchasePrice(doc.purchase_price != null ? String(doc.purchase_price) : '');
       setExpiryDate(doc.expiry_date ?? '');
       setNotes(doc.notes ?? '');
+      setOcrText(doc.ocr_text ?? null);
       const docTags = await getTagsForDocument(doc.id);
       setDocumentTags(docTags);
     }
     setLoading(false);
+  }, [id]);
+
+  useEffect(() => {
+    if (!isNew) {
+      loadDocument();
+    }
+  }, [id, isNew, loadDocument]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!isNew) {
+        loadDocument();
+      }
+    }, [isNew, loadDocument])
+  );
+
+  /** Poll for OCR result after async extraction completes (typically 1–5s after save) */
+  useEffect(() => {
+    if (isNew || fileType !== 'image' || loading) return;
+    if (!ocrExtractOnCapture) {
+      setOcrAwaiting(false);
+      return;
+    }
+    if (ocrQuotaBlocked) {
+      setOcrAwaiting(false);
+      return;
+    }
+    const docId = Number(id);
+    if (Number.isNaN(docId)) return;
+    if (ocrText !== null && ocrText.trim().length > 0) {
+      setOcrAwaiting(false);
+      return;
+    }
+
+    let attempts = 0;
+    setOcrAwaiting(true);
+    const iv = setInterval(async () => {
+      attempts += 1;
+      const doc = await getDocumentById(docId);
+      const t = doc?.ocr_text;
+      if (t != null && t.trim().length > 0) {
+        setOcrText(t);
+        setOcrAwaiting(false);
+        clearInterval(iv);
+        return;
+      }
+      if (attempts >= 15) {
+        setOcrAwaiting(false);
+        clearInterval(iv);
+      }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [id, isNew, fileType, ocrExtractOnCapture, loading, ocrText, ocrQuotaBlocked]);
+
+  const handleCopyOcr = async () => {
+    if (!ocrText?.trim()) return;
+    try {
+      await Clipboard.setStringAsync(ocrText);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      showToast('Copied to clipboard', 'success');
+    } catch {
+      showToast('Could not copy', 'danger');
+    }
   };
 
   const handleSave = async () => {
@@ -146,6 +220,7 @@ export default function DocumentEditorScreen() {
 
   const handleShare = async () => {
     if (!fileUri) return;
+    const endTrace = beginShareTrace('DocumentEditor.handleShare', 'H1');
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
@@ -153,36 +228,14 @@ export default function DocumentEditorScreen() {
       await Sharing.shareAsync(fileUri);
     } catch {
       // ignore
+    } finally {
+      endTrace();
     }
   };
 
   const handleShareToAi = async () => {
     if (!fileUri) return;
     setAiSheetVisible(true);
-  };
-
-  const handleOpenIn = async () => {
-    if (!fileUri) return;
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(fileUri, { dialogTitle: 'Open with...' });
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSaveToDevice = async () => {
-    if (!fileUri) return;
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(fileUri, { dialogTitle: 'Save to device' });
-    } catch {
-      // ignore
-    }
   };
 
   const handleDelete = () => {
@@ -286,13 +339,12 @@ export default function DocumentEditorScreen() {
                 <TouchableOpacity onPress={handleShareToAi} style={styles.headerBtn} activeOpacity={0.7}>
                   <Ionicons name="sparkles-outline" size={20} color={Colors.text} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={handleOpenIn} style={styles.headerBtn} activeOpacity={0.7}>
-                  <Ionicons name="open-outline" size={20} color={Colors.text} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleSaveToDevice} style={styles.headerBtn} activeOpacity={0.7}>
-                  <Ionicons name="download-outline" size={20} color={Colors.text} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleShare} style={styles.headerBtn} activeOpacity={0.7}>
+                <TouchableOpacity
+                  onPress={handleShare}
+                  style={styles.headerBtn}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Share file"
+                >
                   <Ionicons name="share-outline" size={20} color={Colors.text} />
                 </TouchableOpacity>
               </>
@@ -363,7 +415,9 @@ export default function DocumentEditorScreen() {
                           : 'PDF Document'}
                   </Text>
                   <Text style={styles.pdfPreviewHint}>
-                    {fileType === 'pdf' ? 'Tap to view' : 'Tap share or Open in to view'}
+                    {fileType === 'pdf'
+                      ? 'Tap to view'
+                      : 'Use Open with… in the toolbar to view in another app'}
                   </Text>
                 </View>
               )}
@@ -500,6 +554,84 @@ export default function DocumentEditorScreen() {
             scrollEnabled={false}
           />
 
+          {fileType === 'image' && (
+            <>
+              <View style={styles.divider} />
+              <View style={styles.ocrSection}>
+                <View style={styles.ocrHeaderRow}>
+                  <Text style={styles.ocrSectionTitle}>Text from photo</Text>
+                  {ocrText != null && ocrText.trim().length > 0 && (
+                    <TouchableOpacity
+                      onPress={handleCopyOcr}
+                      style={styles.ocrCopyBtn}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy text from photo"
+                    >
+                      <Ionicons name="copy-outline" size={18} color={Colors.primary} />
+                      <Text style={styles.ocrCopyBtnText}>Copy</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <Text style={styles.ocrHint}>
+                  {isPro
+                    ? 'Copy text from the image as many times as you like.'
+                    : `${ocrReadsRemaining} free photo text read${ocrReadsRemaining === 1 ? '' : 's'} left for new documents (Pro: unlimited).`}
+                </Text>
+                {isNew && (
+                  <Text style={styles.ocrPlaceholder}>
+                    {isPro
+                      ? 'After you save, text can appear here if “Text from photo” is on (Add → Camera or Import).'
+                      : ocrReadsRemaining === 0
+                        ? 'After you save, text from new photos won’t be extracted—you’ve used your 5 free photo reads. Upgrade to Pro for unlimited.'
+                        : `Turn on “Text from photo” on Add → Camera or Import before capturing to read and copy text (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left).`}
+                  </Text>
+                )}
+                {!isNew &&
+                  ocrExtractOnCapture === false &&
+                  (ocrText == null || !ocrText.trim()) &&
+                  !ocrAwaiting && (
+                    <Text style={styles.ocrPlaceholder}>
+                      Text wasn’t extracted for this photo (opt-in was off). Enable &quot;Text from photo&quot; on Add →
+                      Camera before capturing new photos, or import again with extraction on.
+                    </Text>
+                  )}
+                {!isNew && ocrExtractOnCapture && ocrQuotaBlocked && (ocrText == null || !ocrText.trim()) && !ocrAwaiting && (
+                  <View>
+                    <Text style={styles.ocrPlaceholder}>
+                      You’ve used all 5 free photo text reads. Upgrade to Pro to read and copy text from new photos as
+                      many times as you need.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.ocrUpgradeBtn}
+                      onPress={() => setOcrPaywallVisible(true)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.ocrUpgradeBtnText}>Unlock Pro</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!isNew && ocrExtractOnCapture && ocrAwaiting && !(ocrText != null && ocrText.trim().length > 0) && (
+                  <Text style={styles.ocrPendingText}>Reading text from photo…</Text>
+                )}
+                {!isNew &&
+                  ocrExtractOnCapture &&
+                  !ocrQuotaBlocked &&
+                  !ocrAwaiting &&
+                  (ocrText == null || !ocrText.trim()) && (
+                    <Text style={styles.ocrPlaceholder}>
+                      No readable text was detected in this image. Try a clearer photo or better lighting.
+                    </Text>
+                  )}
+                {!isNew && ocrText != null && ocrText.trim().length > 0 && (
+                  <Text style={styles.ocrBody} selectable>
+                    {ocrText}
+                  </Text>
+                )}
+              </View>
+            </>
+          )}
+
           {!isNew && (
             <>
               <View style={styles.divider} />
@@ -572,6 +704,7 @@ export default function DocumentEditorScreen() {
                   await loadTags();
                 } catch (e) {
                   if (isLimitError(e)) {
+                    setPendingNewTagName(trimmed);
                     setLimitVisible(true);
                     return;
                   }
@@ -649,8 +782,46 @@ export default function DocumentEditorScreen() {
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
           await useAppStore.getState().setIsPro(true);
+          if (!pendingNewTagName) return;
+          const retryName = pendingNewTagName;
+          setPendingNewTagName(null);
+
+          try {
+            const tagId = await getOrCreateTag(retryName);
+            if (isNew) {
+              setDocumentTags((prev) => {
+                if (prev.some((t) => t.id === tagId)) return prev;
+                return [
+                  ...prev,
+                  { id: tagId, name: retryName, created_at: new Date().toISOString() } as any,
+                ];
+              });
+            } else {
+              await tagDocument(Number(id), tagId);
+              const updated = await getTagsForDocument(Number(id));
+              setDocumentTags(updated);
+            }
+            setTagPickerVisible(false);
+            setNewTagName('');
+            await loadTags();
+          } catch {
+            // ignore
+          }
         }}
         onManage={() => router.replace('/(drawer)')}
+      />
+
+      <PaywallModal
+        visible={ocrPaywallVisible}
+        onClose={() => setOcrPaywallVisible(false)}
+        onUpgrade={() => {
+          void useAppStore.getState().setIsPro(true);
+          setOcrPaywallVisible(false);
+        }}
+        onRestore={() => {
+          void useAppStore.getState().setIsPro(true);
+          setOcrPaywallVisible(false);
+        }}
       />
     </SafeAreaView>
   );
@@ -855,6 +1026,68 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.base,
     paddingBottom: Spacing.base,
     minHeight: 140,
+  },
+  ocrSection: {
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.base,
+    gap: Spacing.sm,
+  },
+  ocrHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  ocrSectionTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrCopyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: Spacing.sm,
+  },
+  ocrCopyBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    marginBottom: Spacing.xs,
+  },
+  ocrPlaceholder: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+    lineHeight: Typography.lineHeightBase,
+  },
+  ocrPendingText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+    fontStyle: 'italic',
+  },
+  ocrBody: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    lineHeight: Typography.lineHeightBase,
+    marginTop: Spacing.xs,
+  },
+  ocrUpgradeBtn: {
+    marginTop: Spacing.md,
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.base,
+    borderRadius: Radius.md,
+  },
+  ocrUpgradeBtnText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
   },
   tagsSection: {
     paddingHorizontal: Spacing.base,

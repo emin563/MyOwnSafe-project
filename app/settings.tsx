@@ -1,4 +1,5 @@
 import { PaywallModal, QuizWhyPro } from '@/components/ui';
+import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
 import { cancelAllNotifications } from '@/services/NotificationService';
 import { useAppStore } from '@/store/app-store';
@@ -29,8 +30,7 @@ export default function SettingsScreen() {
     setUnlocked,
     setIsPro,
     isPro,
-    ocrSearchEnabled,
-    setOcrSearchEnabled,
+    resetOcrReadTrialsForDev,
   } = useAppStore();
 
   const [backupLoading, setBackupLoading] = useState(false);
@@ -169,28 +169,74 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
           </TouchableOpacity>
           <View style={styles.divider} />
-          <View style={styles.row}>
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => router.push('/ocr-extraction-info')}
+            activeOpacity={0.7}
+          >
             <View style={styles.rowIcon}>
-              <Ionicons name="scan-outline" size={20} color={Colors.primary} />
+              <Ionicons name="text-outline" size={20} color={Colors.primary} />
             </View>
             <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>Search inside images (OCR)</Text>
+              <Text style={styles.rowLabel}>Text from photo</Text>
               <Text style={styles.rowHint}>
-                Include text recognized from scanned images in search results
+                On-device OCR, free trials, and how vault search uses extracted text — tap for details.
               </Text>
             </View>
-            <Switch
-              value={ocrSearchEnabled}
-              onValueChange={async (value) => {
-                await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                await setOcrSearchEnabled(value);
-              }}
-              trackColor={{ false: Colors.border, true: Colors.primary }}
-              thumbColor={Colors.white}
-              ios_backgroundColor={Colors.border}
-            />
-          </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
         </View>
+
+        {!isPro && (
+          <>
+            <Text style={styles.sectionTitle}>Free plan</Text>
+            <View style={styles.card}>
+              {FREE_TIER_RULES.map((rule, i) => (
+                <React.Fragment key={rule.title}>
+                  {i > 0 && <View style={styles.divider} />}
+                  <View style={styles.freePlanRow}>
+                    <View style={styles.rowIcon}>
+                      <Ionicons name="information-circle-outline" size={20} color={Colors.primary} />
+                    </View>
+                    <View style={styles.rowContent}>
+                      <Text style={styles.rowLabel}>{rule.title}</Text>
+                      <Text style={styles.rowHint}>{rule.detail}</Text>
+                    </View>
+                  </View>
+                </React.Fragment>
+              ))}
+              <View style={styles.divider} />
+              <View style={styles.freePlanProBlock}>
+                <Text style={styles.freePlanProTitle}>Included only in Pro (one-time purchase)</Text>
+                {PRO_ONLY_FEATURES.map((line) => (
+                  <Text key={line} style={styles.freePlanProLine}>
+                    • {line}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          </>
+        )}
+
+        {isPro && (
+          <>
+            <Text style={styles.sectionTitle}>Your plan</Text>
+            <View style={styles.card}>
+              <View style={styles.row}>
+                <View style={styles.rowIcon}>
+                  <Ionicons name="checkmark-circle-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Pro is active</Text>
+                  <Text style={styles.rowHint}>
+                    Unlimited documents, custom categories, tags, photo text reads, backup, bulk actions, duplicate, and
+                    full prompt library.
+                  </Text>
+                </View>
+              </View>
+            </View>
+          </>
+        )}
 
         {/* Security Section */}
         <Text style={styles.sectionTitle}>Security</Text>
@@ -226,12 +272,14 @@ export default function SettingsScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.rowIcon}>
-              <Ionicons name="cloud-upload-outline" size={20} color={Colors.primary} />
+              <Ionicons name="archive-outline" size={20} color={Colors.primary} />
             </View>
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>Create Backup</Text>
               <Text style={styles.rowHint}>
-                Export all documents and media as a .zip file
+                {isPro
+                  ? 'Export all documents and media as a .zip file'
+                  : 'Pro: full vault backup to a .zip. Tap to see pricing (one-time purchase).'}
               </Text>
             </View>
             {backupLoading ? (
@@ -251,12 +299,14 @@ export default function SettingsScreen() {
             activeOpacity={0.7}
           >
             <View style={styles.rowIcon}>
-              <Ionicons name="cloud-download-outline" size={20} color={Colors.danger} />
+              <Ionicons name="document-attach-outline" size={20} color={Colors.danger} />
             </View>
             <View style={styles.rowContent}>
               <Text style={[styles.rowLabel, styles.rowLabelDanger]}>Restore from Backup</Text>
               <Text style={styles.rowHint}>
-                Replace current data with a backup .zip file
+                {isPro
+                  ? 'Replace current data with a backup .zip file'
+                  : 'Pro: restore from a backup .zip. Tap to see pricing (one-time purchase).'}
               </Text>
             </View>
             {restoreLoading ? (
@@ -291,6 +341,23 @@ export default function SettingsScreen() {
                   ios_backgroundColor={Colors.border}
                 />
               </View>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  await resetOcrReadTrialsForDev();
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="refresh-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Reset OCR free trials</Text>
+                  <Text style={styles.rowHint}>Sets photo-text trial count to 0 for testing Free limits</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
               <View style={styles.divider} />
             </>
           )}
@@ -343,8 +410,8 @@ export default function SettingsScreen() {
               <Text style={styles.rowLabel}>MyOwnSafe Pro</Text>
               <Text style={styles.rowHint}>
                 {isPro
-                  ? 'Pro is active · Unlimited files & categories'
-                  : 'Unlock unlimited files & categories (one-time purchase)'}
+                  ? 'Pro is active · Unlimited files, categories, tags, and photo text reads'
+                  : 'See full Free limits above, then unlock one-time for unlimited + backup + bulk tools'}
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -479,5 +546,29 @@ const styles = StyleSheet.create({
   premiumNote: {
     color: Colors.textMuted,
     fontSize: Typography.fontSizeXs,
+  },
+  freePlanRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+  },
+  freePlanProBlock: {
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    paddingBottom: Spacing.lg,
+  },
+  freePlanProTitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.sm,
+  },
+  freePlanProLine: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 18,
+    marginBottom: 4,
   },
 });

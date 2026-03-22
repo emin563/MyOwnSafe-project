@@ -1,41 +1,59 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, StatusBar } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Platform,
+  StatusBar,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { FREE_OCR_READ_TRIALS } from '@/services/limits';
 
-const FACTS = [
+const SECTIONS = [
   {
-    icon: 'person-circle-outline',
-    title: 'No account required',
-    description: 'You can use Vault without signing up or logging in.',
+    icon: 'camera-outline' as const,
+    title: 'How to enable',
+    body:
+      'Open Add → Camera or Add → Import and turn on the “Text from photo” chip before you capture or pick an image. Nothing is read until you opt in for that session.',
   },
   {
-    icon: 'lock-closed-outline',
-    title: 'No cloud upload by default',
-    description: 'Vault does not upload your documents anywhere unless you explicitly share/export.',
+    icon: 'phone-portrait-outline' as const,
+    title: 'On your device',
+    body:
+      'Text recognition runs on-device when you use this feature. Vault does not send your photos to a server for OCR.',
   },
   {
-    icon: 'phone-portrait-outline',
-    title: 'Stored on-device',
-    description: 'Your files are saved locally in your vault storage on this device.',
+    icon: 'contrast-outline' as const,
+    title: 'Clear, legible text',
+    body:
+      'Text in the photo must be sharp and readable—good lighting, no heavy blur, and contrast between letters and background. Very small, faint, or skewed text may not be recognized reliably.',
   },
   {
-    icon: 'eye-off-outline',
-    title: 'No tracking / analytics',
-    description: 'Vault does not include tracking or analytics SDKs.',
+    icon: 'search-outline' as const,
+    title: 'Vault search',
+    body:
+      'After text is saved with a document, you can find it with the vault search bar — the same way you search titles, notes, and tags.',
+  },
+  {
+    icon: 'copy-outline' as const,
+    title: 'Free plan & Pro',
+    body: `On the Free plan you get ${FREE_OCR_READ_TRIALS} lifetime on-device reads for new photos and imports. Duplicating a document copies text that was already extracted and does not use another free read. Pro does not cap how often you can extract text.`,
   },
 ] as const;
 
-export default function PrivacyOfflineScreen() {
+export default function OcrExtractionInfoScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={22} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Privacy & Offline</Text>
+        <Text style={styles.headerTitle}>Text from photo</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -46,23 +64,26 @@ export default function PrivacyOfflineScreen() {
       >
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
-            <Ionicons name="shield-checkmark-outline" size={34} color={Colors.primary} />
+            <Ionicons name="text-outline" size={34} color={Colors.primary} />
           </View>
-          <Text style={styles.heroTitle}>Your vault stays under your control</Text>
+          <Text style={styles.heroTitle}>OCR text extraction</Text>
           <Text style={styles.heroSubtitle}>
-            Vault is designed to work offline-first. These are the core privacy facts about how your data is handled.
+            Optional on-device reading of text in photos so you can copy it and find it in search.
           </Text>
         </View>
 
         <View style={styles.card}>
-          {FACTS.map((item) => (
-            <View key={item.title} style={styles.factRow}>
-              <View style={styles.factIcon}>
-                <Ionicons name={item.icon as any} size={20} color={Colors.primary} />
+          {SECTIONS.map((item, i) => (
+            <View
+              key={item.title}
+              style={[styles.row, i < SECTIONS.length - 1 && styles.rowBorder]}
+            >
+              <View style={styles.rowIcon}>
+                <Ionicons name={item.icon} size={20} color={Colors.primary} />
               </View>
-              <View style={styles.factText}>
-                <Text style={styles.factTitle}>{item.title}</Text>
-                <Text style={styles.factDesc}>{item.description}</Text>
+              <View style={styles.rowText}>
+                <Text style={styles.rowTitle}>{item.title}</Text>
+                <Text style={styles.rowBody}>{item.body}</Text>
               </View>
             </View>
           ))}
@@ -71,7 +92,8 @@ export default function PrivacyOfflineScreen() {
         <View style={styles.note}>
           <Ionicons name="information-circle-outline" size={18} color={Colors.textMuted} />
           <Text style={styles.noteText}>
-            If you share a document (for example “Open in” or “Save to device”), your OS and the receiving app will handle the file.
+            If “Text from photo” is off, new photos are not scanned for text. Existing documents keep any text that was
+            already saved.
           </Text>
         </View>
       </ScrollView>
@@ -146,15 +168,17 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     overflow: 'hidden',
   },
-  factRow: {
+  row: {
     flexDirection: 'row',
     gap: Spacing.md,
     paddingHorizontal: Spacing.base,
     paddingVertical: Spacing.md,
+  },
+  rowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
-  factIcon: {
+  rowIcon: {
     width: 36,
     height: 36,
     borderRadius: 18,
@@ -162,16 +186,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  factText: {
+  rowText: {
     flex: 1,
-    gap: 2,
+    gap: 4,
   },
-  factTitle: {
+  rowTitle: {
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightSemibold,
   },
-  factDesc: {
+  rowBody: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
     lineHeight: 20,
@@ -190,4 +214,3 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
-

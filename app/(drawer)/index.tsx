@@ -19,6 +19,7 @@ import { deleteFileFromArchive } from '@/services/StorageService';
 import { shareSelectedDocuments } from '@/services/BackupService';
 import { DocumentCard } from '@/components/document/DocumentCard';
 import { ConfirmModal, PaywallModal, QuizWhyPro } from '@/components/ui';
+import { getFreeLimit } from '@/services/limits';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document, FileType } from '@/db/types';
 import type { Tag } from '@/db/types';
@@ -193,15 +194,25 @@ export default function HomeScreen() {
           <Ionicons name="menu" size={24} color={Colors.text} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          {selectedTag && (
-            <Ionicons name="pricetag-outline" size={16} color={Colors.primary} style={styles.headerIcon} />
+          <View style={styles.headerTitleRow}>
+            {selectedTag && (
+              <Ionicons name="pricetag-outline" size={16} color={Colors.primary} style={styles.headerIcon} />
+            )}
+            {selectedCategory && !selectedTag && (
+              <Ionicons name={selectedCategory.icon_name as any} size={16} color={Colors.primary} style={styles.headerIcon} />
+            )}
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {headerTitle}
+            </Text>
+          </View>
+          {!isPro && (
+            <Text style={styles.headerQuotaHint} numberOfLines={2}>
+              {documents.length} / {getFreeLimit('documents')} documents ·{' '}
+              <Text style={styles.headerQuotaLink} onPress={() => router.push('/settings')}>
+                Free plan
+              </Text>
+            </Text>
           )}
-          {selectedCategory && !selectedTag && (
-            <Ionicons name={selectedCategory.icon_name as any} size={16} color={Colors.primary} style={styles.headerIcon} />
-          )}
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {headerTitle}
-          </Text>
         </View>
         <TouchableOpacity
           onPress={() => router.push('/capture')}
@@ -466,15 +477,33 @@ const styles = StyleSheet.create({
   },
   headerCenter: {
     flex: 1,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 2,
+    minWidth: 0,
+  },
+  headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
+    minWidth: 0,
+  },
+  headerQuotaHint: {
+    fontSize: Typography.fontSizeXs,
+    color: Colors.textMuted,
+    marginTop: 2,
+  },
+  headerQuotaLink: {
+    color: Colors.primary,
+    fontWeight: Typography.fontWeightSemibold,
+    textDecorationLine: 'underline',
   },
   headerIcon: {
     marginRight: 2,
   },
   headerTitle: {
     flex: 1,
+    minWidth: 0,
     color: Colors.text,
     fontSize: Typography.fontSizeMd,
     fontWeight: Typography.fontWeightSemibold,

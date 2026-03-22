@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as LegacyFS from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import { beginShareTrace } from '@/services/shareTrace';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '@/db/schema';
 import type { Category, Document } from '@/db/types';
@@ -69,11 +70,16 @@ export async function createBackup(): Promise<void> {
   // 4. Share the zip
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(zipPath, {
-      mimeType: 'application/zip',
-      UTI: 'public.zip-archive',
-      dialogTitle: 'Save Vault Backup',
-    });
+    const endTrace = beginShareTrace('BackupService.createBackup', 'H3');
+    try {
+      await Sharing.shareAsync(zipPath, {
+        mimeType: 'application/zip',
+        UTI: 'public.zip-archive',
+        dialogTitle: 'Save Vault Backup',
+      });
+    } finally {
+      endTrace();
+    }
   }
 }
 
@@ -229,10 +235,15 @@ export async function shareSelectedDocuments(
 
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(zipPath, {
-      mimeType: 'application/zip',
-      UTI: 'public.zip-archive',
-      dialogTitle: 'Share selected documents',
-    });
+    const endTrace = beginShareTrace('BackupService.shareSelectedDocuments', 'H3');
+    try {
+      await Sharing.shareAsync(zipPath, {
+        mimeType: 'application/zip',
+        UTI: 'public.zip-archive',
+        dialogTitle: 'Share selected documents',
+      });
+    } finally {
+      endTrace();
+    }
   }
 }

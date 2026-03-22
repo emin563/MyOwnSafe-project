@@ -35,11 +35,9 @@ import {
   cancelNotification,
 } from '@/services/NotificationService';
 import { copyFileInArchive } from '@/services/StorageService';
-import { requireOptionalNativeModule } from 'expo-modules-core';
-import { getFreeLimit } from '@/services/limits';
+import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
+import { FREE_OCR_READ_TRIALS, getFreeLimit, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
 import { LimitError } from '@/services/LimitError';
-// Note: OCR native module is loaded lazily (Expo Go safe).
-
 type AppStore = {
   categories: Category[];
   documents: Document[];
@@ -71,9 +69,14 @@ type AppStore = {
   /** True when user is within the first 7 days after firstLaunchAt. */
   isIntroEligible: boolean;
 
-  // OCR search
-  ocrSearchEnabled: boolean;
-  setOcrSearchEnabled: (enabled: boolean) => Promise<void>;
+  // OCR: on-device text extraction (opt-in on Add → Camera / Import)
+  /** When true, new images may run on-device text extraction (subject to Pro/trials). Off by default — privacy. */
+  ocrExtractOnCapture: boolean;
+  setOcrExtractOnCapture: (enabled: boolean) => Promise<void>;
+  /** Non‑Pro photo text extractions already used (lifetime; not refunded on delete). */
+  ocrReadTrialsUsed: number;
+  /** Dev only: reset free OCR trials counter for testing. */
+  resetOcrReadTrialsForDev: () => Promise<void>;
 
   // Toast (lightweight UX feedback)
   toast: { message: string; type?: 'success' | 'danger' | 'info' } | null;
@@ -112,7 +115,8 @@ type AppStore = {
     categoryId: number | null,
     purchasePrice?: number | null,
     expiryDate?: string | null,
-    notes?: string | null
+    notes?: string | null,
+    options?: { copyOcrFromSource?: string }
   ) => Promise<number>;
   editDocument: (
     id: number,
@@ -158,7 +162,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isPro: false,
   firstLaunchAt: null,
   isIntroEligible: false,
-  ocrSearchEnabled: true,
+  ocrExtractOnCapture: false,
+  ocrReadTrialsUsed: 0,
   toast: null,
   pendingBulkImports: [],
 
@@ -192,11 +197,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const biometricVal = await getSetting('biometricEnabled');
     const proVal = await getSetting('isPro');
     const firstLaunchAtVal = await getSetting('firstLaunchAt');
-    const ocrEnabledVal = await getSetting('ocrSearchEnabled');
+    const ocrExtractVal = await getSetting('ocrExtractOnCapture');
+    const ocrReadTrialsUsedVal = await getSetting('ocrReadTrialsUsed');
     const pinEnabled = pinEnabledVal === 'true';
     const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
-    const ocrSearchEnabled = ocrEnabledVal == null ? true : ocrEnabledVal === 'true';
+    const ocrExtractOnCapture = ocrExtractVal === 'true';
+    let ocrReadTrialsUsed = ocrReadTrialsUsedVal != null ? Number.parseInt(ocrReadTrialsUsedVal, 10) : 0;
+    if (!Number.isFinite(ocrReadTrialsUsed) || ocrReadTrialsUsed < 0) {
+      ocrReadTrialsUsed = 0;
+    }
+    if (ocrReadTrialsUsed > FREE_OCR_READ_TRIALS) {
+      ocrReadTrialsUsed = FREE_OCR_READ_TRIALS;
+    }
     const now = Date.now();
     let firstLaunchAt = firstLaunchAtVal ? Number(firstLaunchAtVal) : NaN;
     if (!Number.isFinite(firstLaunchAt)) {
@@ -213,7 +226,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       isPro,
       firstLaunchAt,
       isIntroEligible,
-      ocrSearchEnabled,
+      ocrExtractOnCapture,
+      ocrReadTrialsUsed,
       isUnlocked: !lockActive,
     });
   },
@@ -248,9 +262,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ isPro: value });
   },
 
-  setOcrSearchEnabled: async (enabled) => {
-    await setSetting('ocrSearchEnabled', String(enabled));
-    set({ ocrSearchEnabled: enabled });
+  setOcrExtractOnCapture: async (enabled) => {
+    await setSetting('ocrExtractOnCapture', String(enabled));
+    set({ ocrExtractOnCapture: enabled });
+  },
+
+  resetOcrReadTrialsForDev: async () => {
+    await setSetting('ocrReadTrialsUsed', '0');
+    set({ ocrReadTrialsUsed: 0 });
+    get().showToast('OCR free trials reset (dev)', 'success');
   },
 
   showToast: (message, type = 'info') => {
@@ -269,8 +289,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   addCategory: async (name, iconName) => {
     if (!get().isPro) {
       const count = await getTotalCategoryCount();
-      // The DB seeds 4 default categories on first run. Free should allow 5 *additional* categories.
-      const SEEDED_DEFAULT_CATEGORIES = 4;
+      // The DB seeds default categories on first run. Free allows N *additional* categories.
       const userCreated = Math.max(0, count - SEEDED_DEFAULT_CATEGORIES);
       if (userCreated >= getFreeLimit('categories')) {
         throw new LimitError('categories', getFreeLimit('categories'));
@@ -351,7 +370,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return getOrCreateTagByName(name);
   },
 
-  addDocument: async (title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+  addDocument: async (title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes, options) => {
     if (!get().isPro) {
       const count = await getTotalFileCount();
       if (count >= getFreeLimit('documents')) {
@@ -360,31 +379,59 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     const docId = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
 
-    // OCR is non-blocking; store recognized text for image documents.
-    if (fileType === 'image' && get().ocrSearchEnabled) {
-      (async () => {
-        try {
-          const native: any = requireOptionalNativeModule('ExpoTextExtractor');
-          const hasNative = !!native?.extractTextFromImage;
-
-          if (!hasNative) throw new Error('ExpoTextExtractor native module unavailable');
-
-          const parts = await native.extractTextFromImage(fileUri);
-          const text = Array.isArray(parts) ? parts.join('\n') : String(parts ?? '');
-          if (text.trim()) {
-            await updateDocumentOcrText(docId, text);
+    const copyOcr = options?.copyOcrFromSource?.trim();
+    // OCR: duplicate copies existing stored text — no new on-device read, so free trials are not consumed.
+    if (fileType === 'image') {
+      if (copyOcr) {
+        await updateDocumentOcrText(docId, copyOcr);
+      } else if (!get().ocrExtractOnCapture) {
+        // Opt-in off: no new extraction (privacy).
+      } else if (!get().isPro && get().ocrReadTrialsUsed >= FREE_OCR_READ_TRIALS) {
+        // Free tier exhausted: no new extraction (search still works for docs that already have text).
+      } else {
+        (async () => {
+          const usedBefore = get().ocrReadTrialsUsed;
+          const isPro = get().isPro;
+          const result = await extractTextFromImageIfAvailable(fileUri);
+          if (!result.ok) {
+            if (result.reason === 'expo-go') {
+              try {
+                await setSetting('ocrExtractOnCapture', 'false');
+                set({ ocrExtractOnCapture: false });
+                get().showToast(
+                  'Text extraction from photos needs a development build. Turn it on from Add → Camera after installing one.',
+                  'info'
+                );
+              } catch {
+                // ignore
+              }
+              return;
+            }
+            if (result.reason === 'web') {
+              return;
+            }
+            if (result.reason === 'unsupported') {
+              get().showToast('Text recognition is not available on this device.', 'info');
+              return;
+            }
+            if (result.reason === 'error') {
+              if (__DEV__) {
+                console.warn('[OCR]', result.message);
+              }
+              get().showToast('Could not read text from this image.', 'info');
+            }
+            return;
           }
-        } catch (e) {
-          // If the native module isn't available (Expo Go), disable OCR to avoid repeated failures.
-          try {
-            await setSetting('ocrSearchEnabled', 'false');
-            set({ ocrSearchEnabled: false });
-            get().showToast('OCR requires a development build. Disabled OCR.', 'info');
-          } catch {
-            // ignore
+          if (result.text) {
+            await updateDocumentOcrText(docId, result.text);
           }
-        }
-      })();
+          if (!isPro && usedBefore < FREE_OCR_READ_TRIALS) {
+            const next = Math.min(FREE_OCR_READ_TRIALS, usedBefore + 1);
+            await setSetting('ocrReadTrialsUsed', String(next));
+            set({ ocrReadTrialsUsed: next });
+          }
+        })();
+      }
     }
 
     // Schedule expiry notification if date provided
@@ -456,6 +503,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!doc) throw new Error('Document not found');
     const newUri = await copyFileInArchive(doc.file_uri, doc.file_uri.split('.').pop());
     const newTitle = doc.title.trim().startsWith('(Copy)') ? doc.title : `(Copy) ${doc.title}`;
+    const copyOcr =
+      doc.file_type === 'image' && doc.ocr_text != null && doc.ocr_text.trim() !== ''
+        ? { copyOcrFromSource: doc.ocr_text }
+        : undefined;
     const newId = await get().addDocument(
       newTitle,
       newUri,
@@ -463,7 +514,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       doc.category_id,
       doc.purchase_price ?? null,
       doc.expiry_date ?? null,
-      doc.notes ?? null
+      doc.notes ?? null,
+      copyOcr
     );
     const tags = await getTagsForDocument(id);
     for (const tag of tags) {
@@ -478,7 +530,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().loadDocuments();
       return;
     }
-    const list = await searchDocuments(query, get().ocrSearchEnabled);
+    const list = await searchDocuments(query, true);
     const sorted = sortDocumentsBy(list, get().sortBy);
     set({ documents: sorted });
   },

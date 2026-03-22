@@ -15,8 +15,8 @@ import * as Sharing from 'expo-sharing';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
-import { ConfirmModal, UseAiWorkflowSheet } from '@/components/ui';
-import { LimitReachedDialog } from '@/components/ui';
+import { ConfirmModal, ProFeatureDialog, UseAiWorkflowSheet } from '@/components/ui';
+import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document } from '@/db/types';
 import type { Tag } from '@/db/types';
@@ -53,6 +53,7 @@ export function DocumentCard({
   const isExpired = checkExpired(document.expiry_date);
 
   const handleShare = async () => {
+    const endTrace = beginShareTrace('DocumentCard.handleShare', 'H1');
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
@@ -60,33 +61,13 @@ export function DocumentCard({
       await Sharing.shareAsync(document.file_uri);
     } catch {
       // Ignore sharing errors
+    } finally {
+      endTrace();
     }
   };
 
   const handleShareToAi = async () => {
     setAiSheetVisible(true);
-  };
-
-  const handleOpenIn = async () => {
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(document.file_uri, { dialogTitle: 'Open with...' });
-    } catch {
-      // Ignore
-    }
-  };
-
-  const handleSaveToDevice = async () => {
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(document.file_uri, { dialogTitle: 'Save to device' });
-    } catch {
-      // Ignore
-    }
   };
 
   const handleDelete = async () => {
@@ -299,14 +280,6 @@ export function DocumentCard({
               <Ionicons name="share-outline" size={15} color={Colors.textSecondary} />
               <Text style={styles.actionText}>Share</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={handleOpenIn} activeOpacity={0.7}>
-              <Ionicons name="open-outline" size={15} color={Colors.textSecondary} />
-              <Text style={styles.actionText}>Open in</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} onPress={handleSaveToDevice} activeOpacity={0.7}>
-              <Ionicons name="download-outline" size={15} color={Colors.textSecondary} />
-              <Text style={styles.actionText}>Save</Text>
-            </TouchableOpacity>
             <TouchableOpacity
               style={styles.actionBtn}
               onPress={() => setMoveModalVisible(true)}
@@ -354,12 +327,25 @@ export function DocumentCard({
         onCancel={() => setDeleteModalVisible(false)}
       />
 
-      <LimitReachedDialog
+      <ProFeatureDialog
         visible={duplicateGateVisible}
-        kind="documents"
         onClose={() => setDuplicateGateVisible(false)}
+        title="Duplicate is a Pro feature"
+        message="The Free plan is for managing your files one at a time. Pro adds duplicate, full vault backup, multi-select, multi-page scan, and more—all with a one-time purchase."
         onUpgrade={async () => {
           await setIsPro(true);
+          if (duplicating) return;
+          setDuplicating(true);
+          try {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await duplicateDocument(document.id);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showToast('Document duplicated', 'success');
+          } catch {
+            // ignore
+          } finally {
+            setDuplicating(false);
+          }
         }}
       />
 

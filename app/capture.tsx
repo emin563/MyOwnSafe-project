@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { saveFileToArchive } from '@/services/StorageService';
 import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
@@ -26,7 +27,7 @@ import type { FileType } from '@/db/types';
 import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { createPdfFromImages } from '@/services/PdfService';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { getFreeLimit } from '@/services/limits';
+import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
 
 const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
 
@@ -44,7 +45,27 @@ export default function CaptureScreen() {
   const [limitVisible, setLimitVisible] = useState(false);
   const [limitKind, setLimitKind] = useState<'documents'>('documents');
   const [paywallVisible, setPaywallVisible] = useState(false);
+  const [pendingAfterUpgradeAction, setPendingAfterUpgradeAction] = useState<null | 'capture' | 'finishMultiPage'>(null);
   const cameraRef = useRef<CameraView | null>(null);
+
+  const isPro = useAppStore((s) => s.isPro);
+  const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
+  const ocrExtractOnCapture = useAppStore((s) => s.ocrExtractOnCapture);
+  const setOcrExtractOnCapture = useAppStore((s) => s.setOcrExtractOnCapture);
+  const ocrExtractActive = ocrExtractOnCapture;
+  const loadSettings = useAppStore((s) => s.loadSettings);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadSettings();
+    }, [loadSettings])
+  );
+
+  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed);
+  const headerTitle =
+    activeTab === 'camera' && !isPro
+      ? `Add Document (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left)`
+      : 'Add Document';
 
   // Prevent lock from showing when app goes to background while on this screen (e.g. picker or back).
   useEffect(() => {
@@ -76,9 +97,11 @@ export default function CaptureScreen() {
     if (!cameraRef.current || capturing) {
       return;
     }
+    setPendingAfterUpgradeAction('capture');
     if (!(await checkSlotLimit())) {
       return;
     }
+    setPendingAfterUpgradeAction(null);
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -100,7 +123,9 @@ export default function CaptureScreen() {
   const handleFinishMultiPage = async () => {
     if (capturing) return;
     if (multiPageImages.length === 0) return;
+    setPendingAfterUpgradeAction('finishMultiPage');
     if (!(await checkSlotLimit())) return;
+    setPendingAfterUpgradeAction(null);
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -277,7 +302,7 @@ export default function CaptureScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
           <Ionicons name="close" size={24} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Add Document</Text>
+        <Text style={styles.headerTitle}>{headerTitle}</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -300,7 +325,7 @@ export default function CaptureScreen() {
           activeOpacity={0.7}
         >
           <Ionicons
-            name="cloud-upload-outline"
+            name="document-attach-outline"
             size={16}
             color={activeTab === 'import' ? Colors.primary : Colors.textSecondary}
           />
@@ -319,6 +344,13 @@ export default function CaptureScreen() {
           onCapture={handleCapture}
           onFlipCamera={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}
           onToggleFlash={() => setFlash((f) => (f === 'off' ? 'on' : 'off'))}
+          ocrExtractOnCapture={ocrExtractActive}
+          onToggleOcrExtract={async () => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await setOcrExtractOnCapture(!ocrExtractActive);
+          }}
+          ocrReadsRemaining={ocrReadsRemaining}
+          isPro={isPro}
           multiPageMode={multiPageMode}
           pageCount={multiPageImages.length}
           onToggleMultiPage={() => {
@@ -337,6 +369,13 @@ export default function CaptureScreen() {
         />
       ) : (
         <ImportTab
+          ocrExtractOnCapture={ocrExtractActive}
+          onToggleOcrExtract={async () => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await setOcrExtractOnCapture(!ocrExtractActive);
+          }}
+          ocrReadsRemaining={ocrReadsRemaining}
+          isPro={isPro}
           onImportImage={handleImportImage}
           onImportPdf={handleImportPdf}
           onImportWord={handleImportWord}
@@ -351,6 +390,13 @@ export default function CaptureScreen() {
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
           await useAppStore.getState().setIsPro(true);
+          const actionToRetry = pendingAfterUpgradeAction;
+          setPendingAfterUpgradeAction(null);
+          if (actionToRetry === 'capture') {
+            await handleCapture();
+          } else if (actionToRetry === 'finishMultiPage') {
+            await handleFinishMultiPage();
+          }
         }}
         onManage={() => router.replace('/(drawer)')}
       />
@@ -380,6 +426,10 @@ type CameraTabProps = {
   onCapture: () => void;
   onFlipCamera: () => void;
   onToggleFlash: () => void;
+  ocrExtractOnCapture: boolean;
+  onToggleOcrExtract: () => void | Promise<void>;
+  ocrReadsRemaining: number;
+  isPro: boolean;
   multiPageMode: boolean;
   pageCount: number;
   onToggleMultiPage: () => void;
@@ -396,6 +446,10 @@ function CameraTab({
   onCapture,
   onFlipCamera,
   onToggleFlash,
+  ocrExtractOnCapture,
+  onToggleOcrExtract,
+  ocrReadsRemaining,
+  isPro,
   multiPageMode,
   pageCount,
   onToggleMultiPage,
@@ -439,6 +493,22 @@ function CameraTab({
       </View>
 
       <View style={styles.multiRow}>
+        <TouchableOpacity
+          style={[styles.multiChip, ocrExtractOnCapture && styles.multiChipActive]}
+          onPress={onToggleOcrExtract}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="text-outline" size={16} color={ocrExtractOnCapture ? Colors.primary : Colors.textSecondary} />
+          <Text style={[styles.multiChipText, ocrExtractOnCapture && styles.multiChipTextActive]}>
+            Text from photo
+          </Text>
+          {!isPro && (
+            <View style={styles.multiCount}>
+              <Text style={styles.multiCountText}>{ocrReadsRemaining}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.multiChip, multiPageMode && styles.multiChipActive]}
           onPress={onToggleMultiPage}
@@ -494,12 +564,19 @@ function CameraTab({
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.cameraHint}>Position the document within the frame</Text>
+      <Text style={styles.cameraHint}>
+        Position the document within the frame. Turn on &quot;Text from photo&quot; only when you want on-device text
+        extraction (search in Settings is separate).
+      </Text>
     </View>
   );
 }
 
 type ImportTabProps = {
+  ocrExtractOnCapture: boolean;
+  onToggleOcrExtract: () => void | Promise<void>;
+  ocrReadsRemaining: number;
+  isPro: boolean;
   onImportImage: () => void;
   onImportPdf: () => void;
   onImportWord: () => void;
@@ -508,6 +585,10 @@ type ImportTabProps = {
 };
 
 function ImportTab({
+  ocrExtractOnCapture,
+  onToggleOcrExtract,
+  ocrReadsRemaining,
+  isPro,
   onImportImage,
   onImportPdf,
   onImportWord,
@@ -525,6 +606,24 @@ function ImportTab({
       <Text style={styles.importSubtitle}>
         Select a photo, document, or file from your device storage.
       </Text>
+
+      <View style={styles.importOcrRow}>
+        <TouchableOpacity
+          style={[styles.multiChip, ocrExtractOnCapture && styles.multiChipActive]}
+          onPress={onToggleOcrExtract}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="text-outline" size={16} color={ocrExtractOnCapture ? Colors.primary : Colors.textSecondary} />
+          <Text style={[styles.multiChipText, ocrExtractOnCapture && styles.multiChipTextActive]}>
+            Text from photo
+          </Text>
+          {!isPro && (
+            <View style={styles.multiCount}>
+              <Text style={styles.multiCountText}>{ocrReadsRemaining}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <TouchableOpacity style={styles.importCard} onPress={onImportImage} activeOpacity={0.7}>
         <View style={styles.importIcon}>
@@ -702,7 +801,9 @@ const styles = StyleSheet.create({
   multiRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
     paddingHorizontal: Spacing.base,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.sm,
@@ -812,6 +913,13 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeBase,
     lineHeight: Typography.lineHeightBase,
+    marginBottom: Spacing.md,
+  },
+  importOcrRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
     marginBottom: Spacing.xl,
   },
   importCard: {

@@ -89,7 +89,9 @@ export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document
 
             <Text style={styles.title}>Use AI when you want</Text>
             <Text style={styles.subtitle}>
-              Pick a prompt. We’ll copy it, then you can share the document to any AI app.
+              {isPro
+                ? 'Pick a prompt. We’ll copy it, then you can share the document to any AI app.'
+                : 'Free includes one prompt template per category. Pro unlocks every template—same flow: copy, then share to any AI app.'}
             </Text>
 
             <SearchInput

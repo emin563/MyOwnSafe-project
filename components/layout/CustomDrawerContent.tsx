@@ -63,6 +63,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   });
   const [limitVisible, setLimitVisible] = useState(false);
   const [limitKind, setLimitKind] = useState<'categories'>('categories');
+  const [pendingCategoryName, setPendingCategoryName] = useState<string | null>(null);
   const categoriesListRef = React.useRef<FlatList<Category> | null>(null);
 
   const handleSelectCategory = (id: number | null) => {
@@ -91,6 +92,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
       if (isLimitError(e)) {
         // Close the input modal so "Manage / Delete" doesn't return to a create flow.
         setAddModalVisible(false);
+        setPendingCategoryName(name);
         setLimitKind('categories');
         setLimitVisible(true);
         return;
@@ -306,6 +308,14 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           <Ionicons name="settings-outline" size={16} color={Colors.textMuted} />
           <Text style={styles.settingsText}>Settings</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.settingsRow}
+          onPress={() => router.push('/ocr-extraction-info')}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="text-outline" size={16} color={Colors.textMuted} />
+          <Text style={styles.settingsText}>Text from photo</Text>
+        </TouchableOpacity>
       </View>
 
       <InputModal
@@ -339,6 +349,10 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
           await setIsPro(true);
+          if (!pendingCategoryName) return;
+          const retryName = pendingCategoryName;
+          setPendingCategoryName(null);
+          await handleAddCategory(retryName);
         }}
         onManage={() => {
           // Bring the Categories section into view (top of the drawer)
