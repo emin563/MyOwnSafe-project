@@ -87,10 +87,14 @@ export async function searchDocuments(query: string, includeOcr: boolean = true)
   const like = `%${query}%`;
   const ocrClause = includeOcr ? ' OR d.ocr_text LIKE ?' : '';
   return db.getAllAsync<Document>(
-    `SELECT DISTINCT d.* FROM documents d
-     LEFT JOIN document_tags dt ON dt.document_id = d.id
-     LEFT JOIN tags t ON t.id = dt.tag_id
-     WHERE d.title LIKE ? OR d.notes LIKE ? OR t.name LIKE ?${ocrClause}
+    `SELECT d.* FROM documents d
+     WHERE d.title LIKE ? OR d.notes LIKE ?
+       OR EXISTS (
+         SELECT 1
+         FROM document_tags dt
+         JOIN tags t ON t.id = dt.tag_id
+         WHERE dt.document_id = d.id AND t.name LIKE ?
+       )${ocrClause}
      ORDER BY d.updated_at DESC`,
     includeOcr ? [like, like, like, like] : [like, like, like]
   );

@@ -59,13 +59,26 @@ export default function HomeScreen() {
   const [showWhyPro, setShowWhyPro] = useState(false);
 
   useEffect(() => {
-    const ids = documents.map((d) => d.id);
-    if (ids.length === 0) {
-      setDocumentTagsMap({});
-      return;
-    }
-    getTagsForDocuments(ids).then(setDocumentTagsMap);
-  }, [documents]);
+    let cancelled = false;
+
+    (async () => {
+      const filteredDocs =
+        fileTypeFilter === 'all' ? documents : documents.filter((d) => d.file_type === fileTypeFilter);
+      const ids = filteredDocs.map((d) => d.id);
+
+      if (ids.length === 0) {
+        if (!cancelled) setDocumentTagsMap({});
+        return;
+      }
+
+      const map = await getTagsForDocuments(ids);
+      if (!cancelled) setDocumentTagsMap(map);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [documents, fileTypeFilter]);
 
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
   const selectedTag = tags.find((t) => t.id === selectedTagId);

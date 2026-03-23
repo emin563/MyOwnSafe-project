@@ -4,11 +4,50 @@ import * as DocumentPicker from 'expo-document-picker';
 import { beginShareTrace } from '@/services/shareTrace';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '@/db/schema';
-import type { Category, Document } from '@/db/types';
+import type { Category, Document, FileType } from '@/db/types';
 
 const ARCHIVE_DIR = `${LegacyFS.documentDirectory}archive/`;
 const MANIFEST_FILE = 'manifest.json';
 const BACKUP_VERSION = 1;
+
+// ─── Restore hardening limits ──────────────────────────────────────────────
+const MAX_ZIP_BYTES = 50 * 1024 * 1024; // 50 MiB hard cap to prevent OOM on restore
+const MAX_MANIFEST_BYTES = 2 * 1024 * 1024; // 2 MiB
+const MAX_CATEGORIES = 200;
+const MAX_DOCUMENTS = 5000;
+const MAX_ARCHIVE_ENTRIES = 20000;
+const MAX_FILENAME_LEN = 120;
+
+// Allow most filename characters (including spaces/unicode), but never allow path separators
+// or empty/basename traversal. We only enforce this at restore time where zip entry names are
+// untrusted.
+const SAFE_FILENAME_RE = new RegExp(`^[^/\\\\]{1,${MAX_FILENAME_LEN}}$`);
+const RESERVED_FILENAMES = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  'com1',
+  'com2',
+  'com3',
+  'com4',
+  'com5',
+  'com6',
+  'com7',
+  'com8',
+  'com9',
+  'lpt1',
+  'lpt2',
+  'lpt3',
+  'lpt4',
+  'lpt5',
+  'lpt6',
+  'lpt7',
+  'lpt8',
+  'lpt9',
+]);
+
+const ALLOWED_FILE_TYPES: ReadonlySet<FileType> = new Set(['image', 'pdf', 'word', 'excel', 'document']);
 
 type BackupManifest = {
   version: number;
@@ -67,18 +106,27 @@ export async function createBackup(): Promise<void> {
     encoding: LegacyFS.EncodingType.Base64,
   });
 
-  // 4. Share the zip
-  const canShare = await Sharing.isAvailableAsync();
-  if (canShare) {
-    const endTrace = beginShareTrace('BackupService.createBackup', 'H3');
+  // 4. Share the zip (and always cleanup the generated cache file).
+  try {
+    const canShare = await Sharing.isAvailableAsync();
+    if (canShare) {
+      const endTrace = beginShareTrace('BackupService.createBackup', 'H3');
+      try {
+        await Sharing.shareAsync(zipPath, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Save Vault Backup',
+        });
+      } finally {
+        endTrace();
+      }
+    }
+  } finally {
+    // Avoid unbounded growth in cache/ from repeated backups.
     try {
-      await Sharing.shareAsync(zipPath, {
-        mimeType: 'application/zip',
-        UTI: 'public.zip-archive',
-        dialogTitle: 'Save Vault Backup',
-      });
-    } finally {
-      endTrace();
+      await LegacyFS.deleteAsync(zipPath, { idempotent: true });
+    } catch {
+      // non-critical
     }
   }
 }
@@ -102,6 +150,11 @@ export async function restoreFromBackup(): Promise<boolean> {
 
   const zipUri = result.assets[0].uri;
 
+  const zipInfo = await LegacyFS.getInfoAsync(zipUri).catch(() => null);
+  if (zipInfo && typeof zipInfo.size === 'number' && zipInfo.size > MAX_ZIP_BYTES) {
+    throw new Error('Backup file too large to restore.');
+  }
+
   // 2. Read and parse the zip
   const zipBase64 = await LegacyFS.readAsStringAsync(zipUri, {
     encoding: LegacyFS.EncodingType.Base64,
@@ -115,40 +168,55 @@ export async function restoreFromBackup(): Promise<boolean> {
   }
 
   const manifestText = await manifestFile.async('text');
+  if (manifestText.length > MAX_MANIFEST_BYTES) {
+    throw new Error('Invalid backup file: manifest too large.');
+  }
   const manifest: BackupManifest = JSON.parse(manifestText);
 
   if (!manifest.version || !manifest.categories || !manifest.documents) {
     throw new Error('Invalid backup file: manifest is malformed.');
   }
 
+  if (!Array.isArray(manifest.categories) || manifest.categories.length > MAX_CATEGORIES) {
+    throw new Error('Invalid backup file: too many categories.');
+  }
+  if (!Array.isArray(manifest.documents) || manifest.documents.length > MAX_DOCUMENTS) {
+    throw new Error('Invalid backup file: too many documents.');
+  }
+
+  const toSafeFilename = (input: unknown): string | null => {
+    if (typeof input !== 'string') return null;
+    const normalized = input.replace(/\\/g, '/').trim();
+    const name = normalized.split('/').pop() ?? '';
+    if (!name) return null;
+    if (name === '.' || name === '..') return null;
+    if (name.length > MAX_FILENAME_LEN) return null;
+    // Prevent path-traversal style edge cases that can appear in basenames.
+    if (name.includes('..') || name.includes('/') || name.includes('\\')) return null;
+    if (!SAFE_FILENAME_RE.test(name)) return null;
+    if (RESERVED_FILENAMES.has(name.toLowerCase())) return null;
+    return name;
+  };
+
   // 3. Restore SQLite — wipe existing data and re-insert from manifest
   const db = await getDb();
   await db.execAsync('DELETE FROM documents; DELETE FROM categories;');
 
+  const restoredCategoryIds = new Set<number>();
   for (const cat of manifest.categories) {
+    const catId = typeof cat.id === 'number' && Number.isSafeInteger(cat.id) && cat.id > 0 ? cat.id : null;
+    const catName = typeof cat.name === 'string' ? cat.name.slice(0, 200) : null;
+    const iconName = typeof cat.icon_name === 'string' ? cat.icon_name.slice(0, 200) : null;
+    if (catId == null || !catName || !iconName) continue;
+
+    restoredCategoryIds.add(catId);
     await db.runAsync(
       'INSERT OR REPLACE INTO categories (id, name, icon_name, created_at) VALUES (?, ?, ?, ?)',
-      [cat.id, cat.name, cat.icon_name, cat.created_at]
-    );
-  }
-
-  for (const doc of manifest.documents) {
-    await db.runAsync(
-      `INSERT OR REPLACE INTO documents
-         (id, category_id, title, file_uri, file_type, purchase_price, expiry_date, notes, notification_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        doc.id,
-        doc.category_id,
-        doc.title,
-        doc.file_uri,
-        doc.file_type,
-        doc.purchase_price,
-        doc.expiry_date,
-        doc.notes,
-        null, // notification_ids are rescheduled fresh after restore
-        doc.created_at,
-        doc.updated_at,
+        catId,
+        catName,
+        iconName,
+        typeof cat.created_at === 'string' ? cat.created_at.slice(0, 200) : new Date().toISOString(),
       ]
     );
   }
@@ -163,22 +231,83 @@ export async function restoreFromBackup(): Promise<boolean> {
   }
 
   const archiveEntries = zip.folder('archive');
+  const safeArchiveNames = new Set<string>();
   if (archiveEntries) {
-    const filePromises: Promise<void>[] = [];
+    const filesToWrite: Array<{ safeName: string; file: any }> = [];
+
     archiveEntries.forEach((relativePath, file) => {
-      if (!file.dir) {
-        filePromises.push(
-          (async () => {
-            const base64Content = await file.async('base64');
-            const destUri = `${ARCHIVE_DIR}${relativePath}`;
-            await LegacyFS.writeAsStringAsync(destUri, base64Content, {
-              encoding: LegacyFS.EncodingType.Base64,
-            });
-          })()
-        );
+      if (file.dir) return;
+      const safeName = toSafeFilename(relativePath);
+      if (!safeName) return;
+      // Hard per-file cap: prevents single-entry bombs from OOM.
+      const uncompressedSize = (file as any)?._data?.uncompressedSize;
+      if (typeof uncompressedSize === 'number' && uncompressedSize > 30 * 1024 * 1024) {
+        return;
       }
+
+      if (safeArchiveNames.has(safeName)) return; // de-dupe by basename
+      safeArchiveNames.add(safeName);
+      filesToWrite.push({ safeName, file });
     });
-    await Promise.all(filePromises);
+
+    if (safeArchiveNames.size > MAX_ARCHIVE_ENTRIES) {
+      throw new Error('Invalid backup file: too many archive entries.');
+    }
+
+    // Write sequentially to avoid a large concurrent base64/IO memory spike.
+    for (const entry of filesToWrite) {
+      const destUri = `${ARCHIVE_DIR}${entry.safeName}`;
+
+      const base64Content = await entry.file.async('base64');
+      await LegacyFS.writeAsStringAsync(destUri, base64Content, {
+        encoding: LegacyFS.EncodingType.Base64,
+      });
+    }
+  }
+
+  // 5. Restore documents using only archive filenames present in the zip.
+  //    This prevents manifest.json from pointing file_uri at arbitrary device paths.
+  for (const doc of manifest.documents) {
+    const docId = typeof doc.id === 'number' && Number.isSafeInteger(doc.id) && doc.id > 0 ? doc.id : null;
+    const safeNameFromManifest = toSafeFilename(doc.file_uri);
+    const fileType = typeof doc.file_type === 'string' ? (doc.file_type as FileType) : null;
+    const title = typeof doc.title === 'string' ? doc.title.slice(0, 500) : null;
+
+    if (docId == null || !safeNameFromManifest || !title) continue;
+    if (!safeArchiveNames.has(safeNameFromManifest)) continue;
+    if (!fileType || !ALLOWED_FILE_TYPES.has(fileType)) continue;
+
+    const categoryId =
+      typeof doc.category_id === 'number' && Number.isSafeInteger(doc.category_id) && restoredCategoryIds.has(doc.category_id)
+        ? doc.category_id
+        : null;
+
+    const purchasePrice = typeof doc.purchase_price === 'number' && Number.isFinite(doc.purchase_price) ? doc.purchase_price : null;
+    const expiryDate =
+      typeof doc.expiry_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(doc.expiry_date) ? doc.expiry_date : null;
+    const notes = typeof doc.notes === 'string' ? doc.notes.slice(0, 20000) : null;
+
+    const createdAt = typeof doc.created_at === 'string' ? doc.created_at.slice(0, 200) : new Date().toISOString();
+    const updatedAt = typeof doc.updated_at === 'string' ? doc.updated_at.slice(0, 200) : new Date().toISOString();
+
+    await db.runAsync(
+      `INSERT OR REPLACE INTO documents
+         (id, category_id, title, file_uri, file_type, purchase_price, expiry_date, notes, notification_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        docId,
+        categoryId,
+        title,
+        `${ARCHIVE_DIR}${safeNameFromManifest}`,
+        fileType,
+        purchasePrice,
+        expiryDate,
+        notes,
+        null, // notification_ids are rescheduled fresh after restore
+        createdAt,
+        updatedAt,
+      ]
+    );
   }
 
   return true;
@@ -233,17 +362,26 @@ export async function shareSelectedDocuments(
     encoding: LegacyFS.EncodingType.Base64,
   });
 
-  const canShare = await Sharing.isAvailableAsync();
-  if (canShare) {
-    const endTrace = beginShareTrace('BackupService.shareSelectedDocuments', 'H3');
+  try {
+    const canShare = await Sharing.isAvailableAsync();
+    if (canShare) {
+      const endTrace = beginShareTrace('BackupService.shareSelectedDocuments', 'H3');
+      try {
+        await Sharing.shareAsync(zipPath, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Share selected documents',
+        });
+      } finally {
+        endTrace();
+      }
+    }
+  } finally {
+    // Avoid unbounded growth in cache/ from repeated zips.
     try {
-      await Sharing.shareAsync(zipPath, {
-        mimeType: 'application/zip',
-        UTI: 'public.zip-archive',
-        dialogTitle: 'Share selected documents',
-      });
-    } finally {
-      endTrace();
+      await LegacyFS.deleteAsync(zipPath, { idempotent: true });
+    } catch {
+      // non-critical
     }
   }
 }

@@ -26,6 +26,7 @@ import { authFlags } from '@/store/auth-flags';
 import type { FileType } from '@/db/types';
 import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { createPdfFromImages } from '@/services/PdfService';
+import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
 
@@ -52,6 +53,9 @@ export default function CaptureScreen() {
   const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
   const ocrExtractOnCapture = useAppStore((s) => s.ocrExtractOnCapture);
   const setOcrExtractOnCapture = useAppStore((s) => s.setOcrExtractOnCapture);
+  const consumeOcrReadTrial = useAppStore((s) => s.consumeOcrReadTrial);
+  const setPendingOcrText = useAppStore((s) => s.setPendingOcrText);
+  const showToast = useAppStore((s) => s.showToast);
   const ocrExtractActive = ocrExtractOnCapture;
   const loadSettings = useAppStore((s) => s.loadSettings);
 
@@ -129,9 +133,60 @@ export default function CaptureScreen() {
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      // Multi-scan generates a PDF, but OCR must run against the original page images.
+      let preExtractedOcrText: string | null = null;
+      if (ocrExtractOnCapture) {
+        const pages: string[] = [];
+        // Extract sequentially for stability (native OCR is CPU/GPU heavy).
+        for (let pageIndex = 0; pageIndex < multiPageImages.length; pageIndex++) {
+          const pageUri = multiPageImages[pageIndex];
+          const result = await extractTextFromImageIfAvailable(pageUri);
+          if (!result.ok) {
+            if (result.reason === 'expo-go') {
+              try {
+                  await setOcrExtractOnCapture(false);
+                  showToast(
+                    'Text extraction from photos needs a development build. Turn it on from Add → Camera after installing one.',
+                    'info'
+                  );
+              } catch {
+                // ignore
+              }
+              pages.length = 0;
+              break;
+            }
+              if (result.reason === 'web') break;
+            if (result.reason === 'unsupported') break;
+            if (result.reason === 'error') {
+              if (__DEV__) console.warn('[OCR]', result.message);
+            }
+            continue;
+          }
+          if (result.text && result.text.trim()) {
+            const consumed = await consumeOcrReadTrial();
+            if (!consumed) break;
+            pages.push(result.text.trim());
+          }
+        }
+
+        if (pages.length > 0) {
+          preExtractedOcrText = pages
+            .map((t, i) => `=== Page ${i + 1} ===\n${t}`)
+            .join('\n\n');
+        }
+      }
+
       const pdfTempUri = await createPdfFromImages(multiPageImages);
       const pdfName = `scan_${Date.now()}.pdf`;
       const permanentUri = await saveFileToArchive(pdfTempUri, pdfName);
+
+      setPendingOcrText(
+        preExtractedOcrText
+          ? { fileUri: permanentUri, fileType: 'pdf', ocrText: preExtractedOcrText }
+          : null
+      );
+
       setMultiPageImages([]);
       setMultiPageMode(false);
       router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'pdf' } });

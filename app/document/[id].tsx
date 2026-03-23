@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -57,6 +57,8 @@ export default function DocumentEditorScreen() {
     ocrExtractOnCapture,
     isPro,
     ocrReadTrialsUsed,
+    pendingOcrText,
+    clearPendingOcrText,
   } = useAppStore();
 
   const [title, setTitle] = useState('');
@@ -88,6 +90,48 @@ export default function DocumentEditorScreen() {
   const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed);
   const ocrQuotaBlocked = !isPro && ocrReadTrialsUsed >= FREE_OCR_READ_TRIALS;
 
+  const ocrPages = useMemo(() => {
+    const raw = ocrText?.trim();
+    if (!raw) return [];
+
+    const markerRe = /^=== Page (\d+) ===$/m;
+    if (!markerRe.test(raw)) {
+      return [{ pageNumber: 1, content: raw }];
+    }
+
+    const lines = raw.split(/\r?\n/);
+    const pages: { pageNumber: number; content: string }[] = [];
+    let currentPageNumber = 1;
+    let current: string[] = [];
+
+    const flush = () => {
+      const content = current.join('\n').trim();
+      if (content) pages.push({ pageNumber: currentPageNumber, content });
+      current = [];
+    };
+
+    for (const line of lines) {
+      const m = line.match(/^=== Page (\d+) ===$/);
+      if (m) {
+        flush();
+        currentPageNumber = Number.parseInt(m[1], 10) || currentPageNumber;
+      } else {
+        current.push(line);
+      }
+    }
+    flush();
+
+    return pages.length ? pages : [{ pageNumber: 1, content: raw }];
+  }, [ocrText]);
+
+  const [ocrShowAll, setOcrShowAll] = useState(false);
+
+  useEffect(() => {
+    setOcrShowAll(false);
+  }, [ocrText]);
+
+  const visibleOcrPages = ocrShowAll ? ocrPages : ocrPages.slice(0, 1);
+
   const loadDocument = useCallback(async () => {
     const doc = await getDocumentById(Number(id));
     if (doc) {
@@ -110,6 +154,23 @@ export default function DocumentEditorScreen() {
       loadDocument();
     }
   }, [id, isNew, loadDocument]);
+
+  // Multi-scan flow: the OCR text is pre-extracted before creating the PDF and stored as a
+  // temporary "pending" draft so the editor can show/copy it immediately.
+  useEffect(() => {
+    if (!isNew || !pendingOcrText) return;
+    if (pendingOcrText.fileUri === fileUri && pendingOcrText.fileType === fileType) {
+      setOcrText(pendingOcrText.ocrText);
+    }
+    // Only set from the matching draft; do not clear here (we clear on save / unmount).
+  }, [isNew, pendingOcrText, fileUri, fileType]);
+
+  useEffect(() => {
+    if (!isNew) return;
+    return () => {
+      clearPendingOcrText();
+    };
+  }, [isNew, clearPendingOcrText]);
 
   useFocusEffect(
     useCallback(() => {
@@ -139,22 +200,38 @@ export default function DocumentEditorScreen() {
 
     let attempts = 0;
     setOcrAwaiting(true);
-    const iv = setInterval(async () => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
       attempts += 1;
+
       const doc = await getDocumentById(docId);
+      if (cancelled) return;
+
       const t = doc?.ocr_text;
       if (t != null && t.trim().length > 0) {
         setOcrText(t);
         setOcrAwaiting(false);
-        clearInterval(iv);
         return;
       }
+
       if (attempts >= 15) {
         setOcrAwaiting(false);
-        clearInterval(iv);
+        return;
       }
-    }, 2000);
-    return () => clearInterval(iv);
+
+      timeoutId = setTimeout(poll, 2000);
+    };
+
+    // Keep the existing UX timing (first attempt after ~2s).
+    timeoutId = setTimeout(poll, 2000);
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [id, isNew, fileType, ocrExtractOnCapture, loading, ocrText, ocrQuotaBlocked]);
 
   const handleCopyOcr = async () => {
@@ -193,6 +270,10 @@ export default function DocumentEditorScreen() {
     setSaving(true);
     try {
       if (isNew) {
+        const preOcrText =
+          pendingOcrText?.fileUri === fileUri && pendingOcrText.fileType === fileType
+            ? pendingOcrText.ocrText
+            : undefined;
         const newId = await addDocument(
           title.trim(),
           fileUri,
@@ -200,13 +281,17 @@ export default function DocumentEditorScreen() {
           categoryId,
           price,
           expiry,
-          notes.trim() || null
+          notes.trim() || null,
+          preOcrText ? { preOcrText } : undefined
         );
         // If tags were selected before saving, attach them now.
         if (documentTags.length > 0) {
           for (const tag of documentTags) {
             await tagDocument(newId, tag.id);
           }
+        }
+        if (preOcrText) {
+          clearPendingOcrText();
         }
       } else {
         await editDocument(Number(id), title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
@@ -554,7 +639,7 @@ export default function DocumentEditorScreen() {
             scrollEnabled={false}
           />
 
-          {fileType === 'image' && (
+          {(fileType === 'image' || fileType === 'pdf') && (
             <>
               <View style={styles.divider} />
               <View style={styles.ocrSection}>
@@ -578,7 +663,7 @@ export default function DocumentEditorScreen() {
                     ? 'Copy text from the image as many times as you like.'
                     : `${ocrReadsRemaining} free photo text read${ocrReadsRemaining === 1 ? '' : 's'} left for new documents (Pro: unlimited).`}
                 </Text>
-                {isNew && (
+                {isNew && (!ocrText || !ocrText.trim()) && (
                   <Text style={styles.ocrPlaceholder}>
                     {isPro
                       ? 'After you save, text can appear here if “Text from photo” is on (Add → Camera or Import).'
@@ -623,10 +708,34 @@ export default function DocumentEditorScreen() {
                       No readable text was detected in this image. Try a clearer photo or better lighting.
                     </Text>
                   )}
-                {!isNew && ocrText != null && ocrText.trim().length > 0 && (
-                  <Text style={styles.ocrBody} selectable>
-                    {ocrText}
-                  </Text>
+                {ocrText != null && ocrText.trim().length > 0 && (
+                  <>
+                    {visibleOcrPages.map((page) => (
+                      <View key={page.pageNumber} style={styles.ocrPageCard}>
+                        <Text style={styles.ocrPageTitle}>Page {page.pageNumber}</Text>
+                        <Text style={styles.ocrPageBody} selectable>
+                          {page.content}
+                        </Text>
+                      </View>
+                    ))}
+
+                    {ocrPages.length > 1 && (
+                      <TouchableOpacity
+                        style={styles.ocrToggleRow}
+                        onPress={() => setOcrShowAll((v) => !v)}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel={ocrShowAll ? 'Show less OCR text' : 'Show more OCR text'}
+                      >
+                        <Ionicons
+                          name={ocrShowAll ? 'chevron-up' : 'chevron-down'}
+                          size={16}
+                          color={Colors.textSecondary}
+                        />
+                        <Text style={styles.ocrToggleText}>{ocrShowAll ? 'Show less' : 'Show more'}</Text>
+                      </TouchableOpacity>
+                    )}
+                  </>
                 )}
               </View>
             </>
@@ -1051,6 +1160,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.sm,
   },
   ocrCopyBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrPageCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+  },
+  ocrPageTitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.xs,
+  },
+  ocrPageBody: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    lineHeight: Typography.lineHeightBase,
+  },
+  ocrToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingVertical: 6,
+  },
+  ocrToggleText: {
     color: Colors.primary,
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightSemibold,

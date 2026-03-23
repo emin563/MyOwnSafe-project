@@ -60,6 +60,13 @@ export async function initDb(): Promise<void> {
       tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
       PRIMARY KEY (document_id, tag_id)
     );
+
+    -- Optimization indexes for hot paths (search + ordering + joins)
+    CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_documents_category_id ON documents(category_id);
+    CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_tags(document_id);
+    CREATE INDEX IF NOT EXISTS idx_document_tags_tag_id ON document_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
   `);
 
   // Safe migration: add notification_id column if it does not exist yet

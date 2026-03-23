@@ -75,6 +75,18 @@ type AppStore = {
   setOcrExtractOnCapture: (enabled: boolean) => Promise<void>;
   /** Non‑Pro photo text extractions already used (lifetime; not refunded on delete). */
   ocrReadTrialsUsed: number;
+  /**
+   * Temporary OCR draft used for multi-scan (multi-page camera mode) where we extract from the
+   * original images, then save the result into the final PDF document.
+   */
+  pendingOcrText: { fileUri: string; fileType: FileType; ocrText: string } | null;
+  setPendingOcrText: (draft: { fileUri: string; fileType: FileType; ocrText: string } | null) => void;
+  clearPendingOcrText: () => void;
+  /**
+   * Consumes one Free OCR read trial when a recognized text result is produced.
+   * Returns `true` if a trial was consumed (or user is Pro).
+   */
+  consumeOcrReadTrial: () => Promise<boolean>;
   /** Dev only: reset free OCR trials counter for testing. */
   resetOcrReadTrialsForDev: () => Promise<void>;
 
@@ -116,7 +128,7 @@ type AppStore = {
     purchasePrice?: number | null,
     expiryDate?: string | null,
     notes?: string | null,
-    options?: { copyOcrFromSource?: string }
+    options?: { copyOcrFromSource?: string; preOcrText?: string }
   ) => Promise<number>;
   editDocument: (
     id: number,
@@ -164,6 +176,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isIntroEligible: false,
   ocrExtractOnCapture: false,
   ocrReadTrialsUsed: 0,
+  pendingOcrText: null,
   toast: null,
   pendingBulkImports: [],
 
@@ -265,6 +278,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setOcrExtractOnCapture: async (enabled) => {
     await setSetting('ocrExtractOnCapture', String(enabled));
     set({ ocrExtractOnCapture: enabled });
+  },
+
+  setPendingOcrText: (draft) => set({ pendingOcrText: draft }),
+  clearPendingOcrText: () => set({ pendingOcrText: null }),
+
+  consumeOcrReadTrial: async () => {
+    // Pro does not cap OCR reads.
+    if (get().isPro) return true;
+    const usedBefore = get().ocrReadTrialsUsed;
+    if (usedBefore >= FREE_OCR_READ_TRIALS) return false;
+    const next = Math.min(FREE_OCR_READ_TRIALS, usedBefore + 1);
+    await setSetting('ocrReadTrialsUsed', String(next));
+    set({ ocrReadTrialsUsed: next });
+    return true;
   },
 
   resetOcrReadTrialsForDev: async () => {
@@ -380,6 +407,59 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const docId = await createDocument(title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes);
 
     const copyOcr = options?.copyOcrFromSource?.trim();
+    const preOcrText = options?.preOcrText?.trim();
+
+    const estimateOcrPageCount = (text: string): number => {
+      // Multi-scan capture format is:
+      // === Page 1 ===\n<text>\n\n=== Page 2 ===\n<text>...
+      const matches = text.match(/^=== Page \d+ ===$/gm);
+      const pageCount = matches ? matches.length : 1;
+      return Math.max(1, Math.min(50, pageCount));
+    };
+
+    if (fileType === 'pdf') {
+      // Multi-scan: OCR is performed on the original images before generating the PDF.
+      // Store just persists the pre-extracted text here (no new on-device OCR and no trial consumption).
+      if (preOcrText) {
+        // Trust boundary: only accept pre-extracted OCR without consuming Free trials when it
+        // matches the internal `pendingOcrText` draft. Otherwise, treat it as untrusted input
+        // and enforce quota to prevent bypass-by-injection.
+        const pending = get().pendingOcrText;
+        const isTrustedPendingDraft =
+          !!pending &&
+          pending.fileUri === fileUri &&
+          pending.fileType === fileType &&
+          pending.ocrText.trim() === preOcrText;
+
+        if (!get().isPro && !isTrustedPendingDraft) {
+          const remaining = Math.max(0, FREE_OCR_READ_TRIALS - get().ocrReadTrialsUsed);
+          if (remaining <= 0) {
+            // Quota exhausted: do not persist OCR text.
+          } else {
+            const needed = Math.min(remaining, estimateOcrPageCount(preOcrText));
+            let allConsumed = true;
+            for (let i = 0; i < needed; i++) {
+              const consumed = await get().consumeOcrReadTrial();
+              if (!consumed) {
+                allConsumed = false;
+                break;
+              }
+            }
+            if (!allConsumed) {
+              // If quota behavior changed mid-loop, avoid persisting OCR without full accounting.
+            } else {
+              await updateDocumentOcrText(docId, preOcrText);
+            }
+          }
+        } else {
+          await updateDocumentOcrText(docId, preOcrText);
+        }
+      } else if (copyOcr) {
+        // Duplication: copy already extracted OCR text.
+        await updateDocumentOcrText(docId, copyOcr);
+      }
+    }
+
     // OCR: duplicate copies existing stored text — no new on-device read, so free trials are not consumed.
     if (fileType === 'image') {
       if (copyOcr) {
@@ -503,10 +583,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!doc) throw new Error('Document not found');
     const newUri = await copyFileInArchive(doc.file_uri, doc.file_uri.split('.').pop());
     const newTitle = doc.title.trim().startsWith('(Copy)') ? doc.title : `(Copy) ${doc.title}`;
-    const copyOcr =
-      doc.file_type === 'image' && doc.ocr_text != null && doc.ocr_text.trim() !== ''
-        ? { copyOcrFromSource: doc.ocr_text }
-        : undefined;
+    const copyOcr = doc.ocr_text != null && doc.ocr_text.trim() !== '' ? { copyOcrFromSource: doc.ocr_text } : undefined;
     const newId = await get().addDocument(
       newTitle,
       newUri,
@@ -531,7 +608,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return;
     }
     const list = await searchDocuments(query, true);
-    const sorted = sortDocumentsBy(list, get().sortBy);
+    const sortBy = get().sortBy;
+    // searchDocuments already orders by updated_at DESC; avoid extra JS sort for "newest".
+    if (sortBy === 'newest') {
+      set({ documents: list });
+      return;
+    }
+    const sorted = sortDocumentsBy(list, sortBy);
     set({ documents: sorted });
   },
 }));

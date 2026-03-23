@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Modal, View, Text, StyleSheet, TouchableOpacity, ScrollView, Pressable } from 'react-native';
+import { Modal, View, Text, StyleSheet, TouchableOpacity, FlatList, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
@@ -125,22 +125,36 @@ export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document
               ))}
             </View>
 
-            <ScrollView
+            <FlatList
               style={styles.list}
+              data={templates}
+              keyExtractor={(t) => t.id}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
-            >
-              {templates.length === 0 && (
-                <View style={styles.emptyState}>
-                  <Text style={styles.emptyTitle}>No prompts found</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Try a different category or search term.
+              initialNumToRender={12}
+              windowSize={7}
+              removeClippedSubviews
+              ListEmptyComponent={
+                templates.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyTitle}>No prompts found</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Try a different category or search term.
+                    </Text>
+                  </View>
+                ) : null
+              }
+              ListFooterComponent={
+                <View style={styles.privacyBox}>
+                  <Text style={styles.privacyTitle}>Privacy note</Text>
+                  <Text style={styles.privacyText}>
+                    Sharing sends a copy to another app/service. Their privacy rules apply.
                   </Text>
                 </View>
-              )}
-              {templates.map((t) => (
-                <View key={t.id} style={styles.card}>
+              }
+              renderItem={({ item: t }) => (
+                <View style={styles.card}>
                   <View style={styles.cardTop}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.cardTitle}>{t.title}</Text>
@@ -193,15 +207,8 @@ export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document
                     />
                   </View>
                 </View>
-              ))}
-
-              <View style={styles.privacyBox}>
-                <Text style={styles.privacyTitle}>Privacy note</Text>
-                <Text style={styles.privacyText}>
-                  Sharing sends a copy to another app/service. Their privacy rules apply.
-                </Text>
-              </View>
-            </ScrollView>
+              )}
+            />
 
             <View style={styles.actions}>
               <PillButton label="Close" variant="ghost" size="md" onPress={onClose} style={{ flex: 1 }} />

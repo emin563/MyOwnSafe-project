@@ -91,8 +91,27 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 | Settings: add “Privacy & Offline” proof screen | ✅ Done |
 | In-app PDF viewer (baseline via WebView) | ✅ Done |
 | Multi-page scan → single PDF flow (Pro gated) | ✅ Done |
-| OCR search: store `ocr_text`, include in search (toggle in Settings) | ✅ Done |
+| OCR: store `ocr_text` and always include it in vault search (no Settings toggle) | ✅ Done |
+| Multi-scan OCR works for resulting PDFs (OCR on source page images before PDF creation) | ✅ Done |
+| OCR UI: page-based layout + “Show more / Show less” for readability | ✅ Done |
+| OCR quota/trials: duplicates reuse stored text without spending additional reads | ✅ Done |
 | Lightweight toast feedback after key actions (delete/move/duplicate/bulk) | ✅ Done |
+
+---
+
+## 5b. Optimization & Security Hardening (implemented)
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| Drawer search: debounce input and avoid route replacement while typing | ✅ Done |
+| DB search hot-path performance: SQLite indexes + `EXISTS` tag matching | ✅ Done |
+| Search CPU polish: avoid redundant JS sorting on newest results | ✅ Done |
+| PromptTemplateSheet: use `FlatList` virtualization | ✅ Done |
+| BackupService: zip/shares hygiene + sequential restore writes (lower memory spikes) | ✅ Done |
+| BackupService: restore hardening (validate/caps sizes, sanitize archive basenames, prevent unsafe `file_uri`) | ✅ Done |
+| OCR editor: cancellable `setTimeout` polling loop (no overlapping async calls) | ✅ Done |
 
 ---
 
@@ -101,7 +120,8 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 - **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
 - **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, intro pricing + paywall/quiz UX, privacy screen, toasts.
 - **Notes:** OCR requires a dev build / native module to run; in Expo Go it will auto-disable and fall back to title/notes/tag search. PDF viewer is implemented as an in-app baseline viewer (Android-first).
-- **Possible next:** OCR for PDFs, better PDF rendering, multi-page editing/reorder, and deeper AI-optional export UX.
+- **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
+- **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, and deeper AI-optional export UX.
 
 ---
 

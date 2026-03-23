@@ -65,6 +65,8 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   const [limitKind, setLimitKind] = useState<'categories'>('categories');
   const [pendingCategoryName, setPendingCategoryName] = useState<string | null>(null);
   const categoriesListRef = React.useRef<FlatList<Category> | null>(null);
+  const searchDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestSearchQueryRef = React.useRef<string>('');
 
   const handleSelectCategory = (id: number | null) => {
     setSelectedCategoryId(id);
@@ -79,10 +81,35 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   };
 
   const handleSearch = (q: string) => {
+    latestSearchQueryRef.current = q;
     setSearchQuery(q);
-    runSearch(q);
-    router.replace('/(drawer)');
+    const trimmed = q.trim();
+
+    // Empty query should feel immediate (it restores the default category/tag view).
+    if (!trimmed) {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      runSearch(q);
+      return;
+    }
+
+    // Debounce expensive search execution while typing.
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      runSearch(q);
+    }, 250);
   };
+
+  React.useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+
+      // If the drawer unmounts with a pending search, flush the latest query once.
+      const latest = latestSearchQueryRef.current.trim();
+      if (latest) {
+        runSearch(latest);
+      }
+    };
+  }, []);
 
   const handleAddCategory = async (name: string) => {
     try {
