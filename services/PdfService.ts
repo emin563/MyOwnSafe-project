@@ -2,69 +2,138 @@ import { beginShareTrace } from '@/services/shareTrace';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as LegacyFS from 'expo-file-system/legacy';
+import { PDFDocument } from 'pdf-lib';
 import type { Document } from '@/db/types';
 
-export async function createPdfFromImages(imageUris: string[]): Promise<string> {
-  const base64Images: string[] = [];
+const PDF_CHUNK_PAGE_COUNT = 30;
+
+type PdfProgressStage = 'chunk' | 'merge' | 'finalize';
+type PdfProgress = {
+  stage: PdfProgressStage;
+  current: number;
+  total: number;
+};
+type PdfPagePlacementMode = 'fit' | 'fill';
+
+function isLikelyPng(uri: string): boolean {
+  return uri.toLowerCase().endsWith('.png');
+}
+
+function drawImageWithPlacement(
+  page: import('pdf-lib').PDFPage,
+  image: { width: number; height: number },
+  mode: PdfPagePlacementMode
+): void {
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const imageRatio = image.width / image.height;
+  const pageRatio = pageWidth / pageHeight;
+
+  if (mode === 'fit') {
+    let drawWidth = pageWidth;
+    let drawHeight = pageWidth / imageRatio;
+    if (drawHeight > pageHeight) {
+      drawHeight = pageHeight;
+      drawWidth = pageHeight * imageRatio;
+    }
+    const x = (pageWidth - drawWidth) / 2;
+    const y = (pageHeight - drawHeight) / 2;
+    page.drawImage(image as any, { x, y, width: drawWidth, height: drawHeight });
+    return;
+  }
+
+  // Fill mode: cover entire page; crops overflowing area.
+  let drawWidth = pageWidth;
+  let drawHeight = pageWidth / imageRatio;
+  if (drawHeight < pageHeight) {
+    drawHeight = pageHeight;
+    drawWidth = pageHeight * imageRatio;
+  }
+  const x = (pageWidth - drawWidth) / 2;
+  const y = (pageHeight - drawHeight) / 2;
+  page.drawImage(image as any, { x, y, width: drawWidth, height: drawHeight });
+}
+
+async function createPdfChunk(
+  imageUris: string[],
+  chunkIndex: number,
+  pagePlacementMode: PdfPagePlacementMode = 'fill'
+): Promise<string> {
+  void chunkIndex;
+  const chunkPdf = await PDFDocument.create();
+
   for (const uri of imageUris) {
     try {
       const b64 = await LegacyFS.readAsStringAsync(uri, { encoding: LegacyFS.EncodingType.Base64 });
-      base64Images.push(b64);
-    } catch {
-      // Skip unreadable images.
-    }
+      let embeddedImage: Awaited<ReturnType<typeof chunkPdf.embedJpg>> | Awaited<ReturnType<typeof chunkPdf.embedPng>>;
+
+      // Prefer extension hint first, then fall back to the other decoder.
+      if (isLikelyPng(uri)) {
+        try {
+          embeddedImage = await chunkPdf.embedPng(b64);
+        } catch {
+          embeddedImage = await chunkPdf.embedJpg(b64);
+        }
+      } else {
+        try {
+          embeddedImage = await chunkPdf.embedJpg(b64);
+        } catch {
+          embeddedImage = await chunkPdf.embedPng(b64);
+        }
+      }
+
+      const isLandscape = embeddedImage.width > embeddedImage.height;
+      // Use A4 in points, orientation follows source image.
+      const A4_PORTRAIT: [number, number] = [595.28, 841.89];
+      const pageSize: [number, number] = isLandscape
+        ? [A4_PORTRAIT[1], A4_PORTRAIT[0]]
+        : A4_PORTRAIT;
+      const page = chunkPdf.addPage(pageSize);
+      drawImageWithPlacement(page, embeddedImage, pagePlacementMode);
+    } catch {}
   }
 
-  const pagesHtml = base64Images
-    .map(
-      (b64) => `
-      <div class="page">
-        <img src="data:image/jpeg;base64,${b64}" />
-      </div>
-    `
-    )
-    .join('\n');
+  const chunkBase64 = await chunkPdf.saveAsBase64();
+  const chunkUri = `${LegacyFS.cacheDirectory}scan_chunk_${Date.now()}_${chunkIndex}.pdf`;
+  await LegacyFS.writeAsStringAsync(chunkUri, chunkBase64, { encoding: LegacyFS.EncodingType.Base64 });
+  return chunkUri;
+}
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #fff; }
-    @page { margin: 0; }
+export async function createPdfFromImages(
+  imageUris: string[],
+  onProgress?: (progress: PdfProgress) => void,
+  options?: { pagePlacementMode?: PdfPagePlacementMode }
+): Promise<string> {
+  if (imageUris.length <= PDF_CHUNK_PAGE_COUNT) {
+    onProgress?.({ stage: 'chunk', current: 1, total: 1 });
+    return createPdfChunk(imageUris, 0, options?.pagePlacementMode ?? 'fill');
+  }
 
-    .page {
-      width: 100%;
-      height: 100vh;
-      padding: 0;
-      page-break-after: always;
-      break-after: page;
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .page:last-child {
-      page-break-after: auto;
-      break-after: auto;
-    }
-    .page img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      display: block;
-    }
-  </style>
-</head>
-<body>
-  ${pagesHtml}
-</body>
-</html>`;
+  const chunkUris: string[] = [];
+  const totalChunks = Math.ceil(imageUris.length / PDF_CHUNK_PAGE_COUNT);
+  for (let i = 0; i < imageUris.length; i += PDF_CHUNK_PAGE_COUNT) {
+    const chunkIndex = Math.floor(i / PDF_CHUNK_PAGE_COUNT);
+    onProgress?.({ stage: 'chunk', current: chunkIndex + 1, total: totalChunks });
+    const chunk = imageUris.slice(i, i + PDF_CHUNK_PAGE_COUNT);
+    const chunkUri = await createPdfChunk(chunk, chunkIndex, options?.pagePlacementMode ?? 'fill');
+    chunkUris.push(chunkUri);
+  }
 
-  const { uri } = await Print.printToFileAsync({ html, base64: false });
-  return uri;
+  const mergedPdf = await PDFDocument.create();
+  for (let i = 0; i < chunkUris.length; i += 1) {
+    onProgress?.({ stage: 'merge', current: i + 1, total: chunkUris.length });
+    const chunkUri = chunkUris[i];
+    const chunkBase64 = await LegacyFS.readAsStringAsync(chunkUri, { encoding: LegacyFS.EncodingType.Base64 });
+    const sourcePdf = await PDFDocument.load(chunkBase64);
+    const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+    pages.forEach((p) => mergedPdf.addPage(p));
+  }
+
+  onProgress?.({ stage: 'finalize', current: 1, total: 1 });
+  const mergedBase64 = await mergedPdf.saveAsBase64();
+  const mergedUri = `${LegacyFS.cacheDirectory}scan_merged_${Date.now()}.pdf`;
+  await LegacyFS.writeAsStringAsync(mergedUri, mergedBase64, { encoding: LegacyFS.EncodingType.Base64 });
+  return mergedUri;
 }
 
 function buildHtmlTemplate(doc: Document, categoryName: string | undefined, imageBase64: string | null): string {

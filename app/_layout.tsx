@@ -7,6 +7,7 @@ import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import { LockScreen } from '@/components/security/LockScreen';
 import { Toast } from '@/components/ui';
+import { InputModal } from '@/components/ui/InputModal';
 import {
   configureNotifications,
   requestNotificationPermissions,
@@ -23,6 +24,9 @@ export default function RootLayout() {
     pinEnabled,
     biometricEnabled,
     setUnlocked,
+    vaultNamePromptVisible,
+    setVaultName,
+    dismissVaultNamePrompt,
     toast,
     clearToast,
   } = useAppStore();
@@ -146,6 +150,13 @@ export default function RootLayout() {
             animation: 'slide_from_right',
           }}
         />
+        <Stack.Screen
+          name="multi-page-info"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+          }}
+        />
       </Stack>
 
       {showLock && (
@@ -161,6 +172,19 @@ export default function RootLayout() {
           onDone={clearToast}
         />
       )}
+
+      <InputModal
+        visible={vaultNamePromptVisible}
+        title="Name your vault (optional)"
+        placeholder="e.g. My Vault"
+        confirmLabel="Save"
+        onConfirm={async (value) => {
+          await setVaultName(value);
+        }}
+        onCancel={() => {
+          void dismissVaultNamePrompt();
+        }}
+      />
     </>
   );
 }

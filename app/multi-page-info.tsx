@@ -12,48 +12,43 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { FREE_OCR_BASE_READS, FREE_OCR_WEEKLY_BONUS } from '@/services/limits';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 
 const SECTIONS = [
   {
-    icon: 'camera-outline' as const,
-    title: 'How to enable',
+    icon: 'document-outline' as const,
+    title: 'How Multi-page works',
     body:
-      'Open Add → Camera or Add → Import and turn on the “Text from photo” chip before you capture or pick an image. Nothing is read until you opt in for that session.',
+      'Turn on Multi-page PDF in Add → Camera, capture pages one by one, then tap Finish to generate a single PDF file.',
   },
   {
-    icon: 'phone-portrait-outline' as const,
-    title: 'On your device',
+    icon: 'warning-outline' as const,
+    title: 'Tested limit',
     body:
-      'Text recognition runs on-device when you use this feature. Vault does not send your photos to a server for OCR.',
+      `Multi-page scan has been tested up to ${MULTI_PAGE_TESTED_LIMIT} images. Above this range, some devices may fail due to memory and file-size limits.`,
   },
   {
-    icon: 'contrast-outline' as const,
-    title: 'Clear, legible text',
+    icon: 'library-outline' as const,
+    title: 'For long books or files',
     body:
-      'Text in the photo must be sharp and readable—good lighting, no heavy blur, and contrast between letters and background. Very small, faint, or skewed text may not be recognized reliably.',
+      'For very long content, scan in sections (for example 200-500 pages per part), then keep them as separate files or merge externally.',
   },
   {
-    icon: 'search-outline' as const,
-    title: 'Vault search',
+    icon: 'checkmark-done-outline' as const,
+    title: 'Best results',
     body:
-      'After text is saved with a document, you can find it with the vault search bar — the same way you search titles, notes, and tags.',
-  },
-  {
-    icon: 'copy-outline' as const,
-    title: 'Free plan & Pro',
-    body: `On the Free plan you start with ${FREE_OCR_BASE_READS} on-device reads for new photos and imports, and get +${FREE_OCR_WEEKLY_BONUS} additional reads every week. Duplicating a document copies text that was already extracted and does not use another read. Pro does not cap how often you can extract text.`,
+      'Use consistent lighting and hold the camera steady. Very large runs may lower quality to keep processing stable.',
   },
 ] as const;
 
-export default function OcrExtractionInfoScreen() {
+export default function MultiPageInfoScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={22} color={Colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Text from photo</Text>
+        <Text style={styles.headerTitle}>Multi-page PDF</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -64,11 +59,11 @@ export default function OcrExtractionInfoScreen() {
       >
         <View style={styles.hero}>
           <View style={styles.heroIcon}>
-            <Ionicons name="text-outline" size={34} color={Colors.primary} />
+            <Ionicons name="document-text-outline" size={34} color={Colors.primary} />
           </View>
-          <Text style={styles.heroTitle}>OCR text extraction</Text>
+          <Text style={styles.heroTitle}>Multi-page scan information</Text>
           <Text style={styles.heroSubtitle}>
-            Optional on-device reading of text in photos so you can copy it and find it in search.
+            Guidance for large scans, tested limits, and recommended section-based workflow.
           </Text>
         </View>
 
@@ -87,14 +82,6 @@ export default function OcrExtractionInfoScreen() {
               </View>
             </View>
           ))}
-        </View>
-
-        <View style={styles.note}>
-          <Ionicons name="information-circle-outline" size={18} color={Colors.textMuted} />
-          <Text style={styles.noteText}>
-            If “Text from photo” is off, new photos are not scanned for text. Existing documents keep any text that was
-            already saved.
-          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -197,19 +184,6 @@ const styles = StyleSheet.create({
   },
   rowBody: {
     color: Colors.textSecondary,
-    fontSize: Typography.fontSizeSm,
-    lineHeight: 20,
-  },
-  note: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    alignItems: 'flex-start',
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.lg,
-  },
-  noteText: {
-    flex: 1,
-    color: Colors.textMuted,
     fontSize: Typography.fontSizeSm,
     lineHeight: 20,
   },

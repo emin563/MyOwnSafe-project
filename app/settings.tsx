@@ -2,9 +2,28 @@ import { PaywallModal, QuizWhyPro } from '@/components/ui';
 import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
 import { cancelAllNotifications } from '@/services/NotificationService';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
+import { getPerformanceMetrics, resetPerformanceMetrics } from '@/services/performanceMetrics';
+import { getOcrMetrics, resetOcrMetrics } from '@/services/ocrMetrics';
+import {
+  getRegressionChecklist,
+  resetRegressionChecklist,
+  setRegressionCaseStatus,
+  type RegressionChecklist,
+  type RegressionCasePages,
+} from '@/services/regressionChecklist';
+import {
+  OCR_QA_CASES,
+  getOcrQaChecklist,
+  resetOcrQaChecklist,
+  setOcrQaCaseStatus,
+  type OcrQaChecklist,
+  type OcrQaCaseId,
+} from '@/services/ocrQaChecklist';
 import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
@@ -12,6 +31,7 @@ import React, { useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Share,
     ScrollView,
     StyleSheet,
     Switch,
@@ -20,6 +40,14 @@ import {
     View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+type MetricsSummary = {
+  label: string;
+  p50Ms: number;
+  targetMs: number;
+  meetsTarget: boolean;
+  count: number;
+};
 
 export default function SettingsScreen() {
   const {
@@ -38,6 +66,17 @@ export default function SettingsScreen() {
   const [premiumExpanded, setPremiumExpanded] = useState(false);
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsRows, setMetricsRows] = useState<MetricsSummary[]>([]);
+  const [metricsMessage, setMetricsMessage] = useState<string | null>(null);
+  const [ocrMetricsMessage, setOcrMetricsMessage] = useState<string | null>(null);
+  const [ocrMetricsRows, setOcrMetricsRows] = useState<string[]>([]);
+  const [ocrQaRows, setOcrQaRows] = useState<OcrQaChecklist | null>(null);
+  const [ocrQaMessage, setOcrQaMessage] = useState<string | null>(null);
+  const [regressionLoading, setRegressionLoading] = useState(false);
+  const [regressionRows, setRegressionRows] = useState<RegressionChecklist | null>(null);
+  const [regressionMessage, setRegressionMessage] = useState<string | null>(null);
+  const [regressionReportActionAt, setRegressionReportActionAt] = useState<string | null>(null);
 
   // ── Biometric toggle ────────────────────────────────────────────────────
 
@@ -134,6 +173,157 @@ export default function SettingsScreen() {
     );
   };
 
+  const loadMetricsSnapshot = async () => {
+    setMetricsLoading(true);
+    setMetricsMessage(null);
+    try {
+      const metrics = await getPerformanceMetrics();
+      const rows: MetricsSummary[] = [
+        { key: 'scan_to_preview', label: 'Scan to preview' },
+        { key: 'scan_to_pdf', label: 'Scan to PDF' },
+        { key: 'open_pdf', label: 'Open PDF' },
+        { key: 'show_progress_latency', label: 'Show progress latency' },
+      ]
+        .map((meta) => {
+          const m = metrics[meta.key as keyof typeof metrics];
+          if (!m) return null;
+          return {
+            label: meta.label,
+            p50Ms: m.p50Ms,
+            targetMs: m.targetMs,
+            meetsTarget: m.meetsTarget,
+            count: m.count,
+          };
+        })
+        .filter((v): v is MetricsSummary => v != null);
+      setMetricsRows(rows);
+      if (rows.length === 0) {
+        setMetricsMessage('No metrics yet. Run scan/open flows first, then tap again.');
+      } else {
+        setMetricsMessage(`Loaded ${rows.length} metric group${rows.length === 1 ? '' : 's'}.`);
+      }
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+
+  const loadOcrMetricsSnapshot = async () => {
+    setMetricsLoading(true);
+    setOcrMetricsMessage(null);
+    try {
+      const m = await getOcrMetrics();
+      const successPages = Math.max(0, m.totalPages - m.failedPages);
+      const weakRate = m.totalPages > 0 ? Math.round((m.weakPages / m.totalPages) * 100) : 0;
+      const timeoutRate = m.totalPages > 0 ? Math.round((m.timedOutPages / m.totalPages) * 100) : 0;
+      setOcrMetricsRows([
+        `OCR pages processed: ${m.totalPages}`,
+        `Success pages: ${successPages}`,
+        `Failed pages: ${m.failedPages}`,
+        `Weak pages: ${m.weakPages} (${weakRate}%)`,
+        `Retried pages: ${m.retriedPages}`,
+        `Improved after retry: ${m.improvedPages}`,
+        `Timeout pages: ${m.timedOutPages} (${timeoutRate}%)`,
+        `OCR latency p50/avg: ${m.p50LatencyMs}ms / ${m.avgLatencyMs}ms`,
+      ]);
+      setOcrMetricsMessage(m.totalPages === 0 ? 'No OCR metrics yet. Run OCR flows first.' : 'Loaded OCR metrics snapshot.');
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+
+  const loadOcrQaSnapshot = async () => {
+    setMetricsLoading(true);
+    setOcrQaMessage(null);
+    try {
+      const snapshot = await getOcrQaChecklist();
+      setOcrQaRows(snapshot);
+      const tested = Object.values(snapshot).filter((v) => v !== 'pending').length;
+      setOcrQaMessage(`Loaded OCR QA checklist. ${tested}/${OCR_QA_CASES.length} marked.`);
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+
+  const setOcrQaStatus = async (id: OcrQaCaseId, status: 'pass' | 'fail') => {
+    setMetricsLoading(true);
+    try {
+      const next = await setOcrQaCaseStatus(id, status);
+      setOcrQaRows(next);
+      setOcrQaMessage(`${OCR_QA_CASES.find((c) => c.id === id)?.label ?? id} marked as ${status.toUpperCase()}.`);
+    } finally {
+      setMetricsLoading(false);
+    }
+  };
+
+  const loadRegressionSnapshot = async () => {
+    setRegressionLoading(true);
+    setRegressionMessage(null);
+    try {
+      const snapshot = await getRegressionChecklist();
+      setRegressionRows(snapshot);
+      const testedCount = Object.values(snapshot).filter((v) => v !== 'pending').length;
+      setRegressionMessage(`Loaded checklist. ${testedCount}/5 runs marked.`);
+    } finally {
+      setRegressionLoading(false);
+    }
+  };
+
+  const updateRegressionStatus = async (pages: RegressionCasePages, status: 'pass' | 'fail') => {
+    setRegressionLoading(true);
+    try {
+      const next = await setRegressionCaseStatus(pages, status);
+      setRegressionRows(next);
+      setRegressionMessage(`${pages}-page run marked as ${status.toUpperCase()}.`);
+    } finally {
+      setRegressionLoading(false);
+    }
+  };
+
+  const copyRegressionReport = async () => {
+    setRegressionLoading(true);
+    try {
+      const snapshot = regressionRows ?? (await getRegressionChecklist());
+      setRegressionRows(snapshot);
+      const report = buildRegressionReport(snapshot);
+      await Clipboard.setStringAsync(report);
+      setRegressionMessage('Regression report copied to clipboard.');
+      setRegressionReportActionAt(`Last copied: ${new Date().toLocaleString()}`);
+    } finally {
+      setRegressionLoading(false);
+    }
+  };
+
+  const shareRegressionReport = async () => {
+    setRegressionLoading(true);
+    try {
+      const snapshot = regressionRows ?? (await getRegressionChecklist());
+      setRegressionRows(snapshot);
+      const report = buildRegressionReport(snapshot);
+      await Share.share({ message: report });
+      setRegressionMessage('Regression report shared.');
+      setRegressionReportActionAt(`Last shared: ${new Date().toLocaleString()}`);
+    } finally {
+      setRegressionLoading(false);
+    }
+  };
+
+  const buildRegressionReport = (snapshot: RegressionChecklist): string => {
+    const statuses = Object.values(snapshot);
+    const passed = statuses.filter((s) => s === 'pass').length;
+    const failed = statuses.filter((s) => s === 'fail').length;
+    const pending = statuses.filter((s) => s === 'pending').length;
+    const lines = ([10, 50, 100, 200, 500] as const).map((pages) => {
+      const state = snapshot[pages];
+      const statusText = state === 'pass' ? 'PASS' : state === 'fail' ? 'FAIL' : 'PENDING';
+      return `- ${pages} pages: ${statusText}`;
+    });
+    return [
+      `Regression Checklist Report (${new Date().toISOString()})`,
+      `Score: ${passed}/5 passed, ${failed} failed, ${pending} pending`,
+      ...lines,
+    ].join('\n');
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
@@ -168,7 +358,10 @@ export default function SettingsScreen() {
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
           </TouchableOpacity>
-          <View style={styles.divider} />
+        </View>
+
+        <Text style={styles.sectionTitle}>Features</Text>
+        <View style={styles.card}>
           <TouchableOpacity
             style={[styles.row, styles.rowBtn]}
             onPress={() => router.push('/ocr-extraction-info')}
@@ -181,6 +374,23 @@ export default function SettingsScreen() {
               <Text style={styles.rowLabel}>Text from photo</Text>
               <Text style={styles.rowHint}>
                 On-device OCR, free trials, and how vault search uses extracted text — tap for details.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => router.push('/multi-page-info')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="document-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Multi-page PDF</Text>
+              <Text style={styles.rowHint}>
+                Multi-page scan flow, tested-limit warning (up to {MULTI_PAGE_TESTED_LIMIT} images), and long-file section guidance.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -358,6 +568,358 @@ export default function SettingsScreen() {
                 </View>
                 <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
               </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={loadMetricsSnapshot}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="speedometer-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>View performance metrics</Text>
+                  <Text style={styles.rowHint}>Shows local p50 timings vs targets (dev only)</Text>
+                </View>
+                {metricsLoading ? (
+                  <ActivityIndicator color={Colors.primary} size="small" />
+                ) : (
+                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                )}
+              </TouchableOpacity>
+              {metricsRows.length > 0 && (
+                <View style={styles.metricsCard}>
+                  {metricsRows.map((row) => (
+                    <View key={row.label} style={styles.metricsRow}>
+                      <Text style={styles.metricsName}>{row.label}</Text>
+                      <Text style={[styles.metricsValue, row.meetsTarget ? styles.metricsGood : styles.metricsBad]}>
+                        p50 {row.p50Ms}ms / target {row.targetMs}ms ({row.count})
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+              {metricsMessage ? (
+                <View style={styles.metricsMessageWrap}>
+                  <Text style={styles.metricsMessageText}>{metricsMessage}</Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  await resetPerformanceMetrics();
+                  setMetricsRows([]);
+                  setMetricsMessage('Metrics cleared.');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={[styles.rowLabel, styles.rowLabelDanger]}>Reset performance metrics</Text>
+                  <Text style={styles.rowHint}>Clears local timing history (dev only)</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={loadOcrMetricsSnapshot}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="reader-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>View OCR metrics</Text>
+                  <Text style={styles.rowHint}>Success, weak/retry, timeout, and OCR latency stats</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              {ocrMetricsRows.length > 0 && (
+                <View style={styles.metricsCard}>
+                  {ocrMetricsRows.map((line) => (
+                    <Text key={line} style={styles.metricsMessageText}>
+                      {line}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              {ocrMetricsMessage ? (
+                <View style={styles.metricsMessageWrap}>
+                  <Text style={styles.metricsMessageText}>{ocrMetricsMessage}</Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  await resetOcrMetrics();
+                  setOcrMetricsRows([]);
+                  setOcrMetricsMessage('OCR metrics cleared.');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={[styles.rowLabel, styles.rowLabelDanger]}>Reset OCR metrics</Text>
+                  <Text style={styles.rowHint}>Clears local OCR metric counters/history</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={loadOcrQaSnapshot}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="checkmark-circle-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>View OCR QA checklist</Text>
+                  <Text style={styles.rowHint}>Clean docs, receipts, low light, angled, glare</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              {ocrQaRows ? (
+                <View style={styles.metricsCard}>
+                  {OCR_QA_CASES.map((c) => {
+                    const status = ocrQaRows[c.id];
+                    return (
+                      <View key={c.id} style={styles.regressionRow}>
+                        <Text style={styles.metricsName}>{c.label}</Text>
+                        <View style={styles.regressionActions}>
+                          <TouchableOpacity
+                            style={[styles.regressionBtn, status === 'pass' && styles.regressionBtnPass]}
+                            onPress={() => {
+                              void setOcrQaStatus(c.id, 'pass');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={[styles.regressionBtnText, status === 'pass' && styles.regressionBtnTextActive]}>
+                              PASS
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.regressionBtn, status === 'fail' && styles.regressionBtnFail]}
+                            onPress={() => {
+                              void setOcrQaStatus(c.id, 'fail');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={[styles.regressionBtnText, status === 'fail' && styles.regressionBtnTextFailActive]}>
+                              FAIL
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+              {ocrQaMessage ? (
+                <View style={styles.metricsMessageWrap}>
+                  <Text style={styles.metricsMessageText}>{ocrQaMessage}</Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  const reset = await resetOcrQaChecklist();
+                  setOcrQaRows(reset);
+                  setOcrQaMessage('OCR QA checklist cleared.');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="refresh-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Reset OCR QA checklist</Text>
+                  <Text style={styles.rowHint}>Sets all OCR QA cases back to pending</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <View style={styles.divider} />
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={loadRegressionSnapshot}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="checkmark-done-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>View regression checklist</Text>
+                  <Text style={styles.rowHint}>Track pass/fail for 10/50/100/200/500 page runs</Text>
+                </View>
+                {regressionLoading ? (
+                  <ActivityIndicator color={Colors.primary} size="small" />
+                ) : (
+                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                )}
+              </TouchableOpacity>
+              {regressionRows ? (
+                <View style={styles.metricsCard}>
+                  {(() => {
+                    const statuses = Object.values(regressionRows);
+                    const passed = statuses.filter((s) => s === 'pass').length;
+                    const failed = statuses.filter((s) => s === 'fail').length;
+                    const scoreStyle =
+                      failed > 0
+                        ? styles.regressionScoreBad
+                        : passed === 5
+                          ? styles.regressionScoreGood
+                          : styles.regressionScoreWarn;
+                    return (
+                      <View style={styles.regressionScoreRow}>
+                        <Text style={styles.metricsName}>Overall checklist score</Text>
+                        <Text style={[styles.regressionScoreText, scoreStyle]}>
+                          {passed}/5 passed{failed > 0 ? `, ${failed} failed` : ''}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+                  {([10, 50, 100, 200, 500] as const).map((pages) => {
+                    const status = regressionRows[pages];
+                    return (
+                      <View key={pages} style={styles.regressionRow}>
+                        <Text style={styles.metricsName}>{pages} pages</Text>
+                        <View style={styles.regressionActions}>
+                          <TouchableOpacity
+                            style={[
+                              styles.regressionBtn,
+                              status === 'pass' && styles.regressionBtnPass,
+                            ]}
+                            onPress={() => {
+                              void updateRegressionStatus(pages, 'pass');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <Text
+                              style={[
+                                styles.regressionBtnText,
+                                status === 'pass' && styles.regressionBtnTextActive,
+                              ]}
+                            >
+                              PASS
+                            </Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[
+                              styles.regressionBtn,
+                              status === 'fail' && styles.regressionBtnFail,
+                            ]}
+                            onPress={() => {
+                              void updateRegressionStatus(pages, 'fail');
+                            }}
+                            activeOpacity={0.8}
+                          >
+                            <Text
+                              style={[
+                                styles.regressionBtnText,
+                                status === 'fail' && styles.regressionBtnTextFailActive,
+                              ]}
+                            >
+                              FAIL
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+              {regressionMessage ? (
+                <View style={styles.metricsMessageWrap}>
+                  <Text style={styles.metricsMessageText}>{regressionMessage}</Text>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  const reset = await resetRegressionChecklist();
+                  setRegressionRows(reset);
+                  setRegressionMessage('Regression checklist cleared.');
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="refresh-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Reset regression checklist</Text>
+                  <Text style={styles.rowHint}>Sets 10/50/100/200/500 runs to pending</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={copyRegressionReport}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="copy-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Copy regression report</Text>
+                  <Text style={styles.rowHint}>Copies compact 10/50/100/200/500 pass-fail summary</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={async () => {
+                  setRegressionLoading(true);
+                  try {
+                    const current = regressionRows ?? (await getRegressionChecklist());
+                    let next = current;
+                    for (const pages of [10, 50, 100, 200, 500] as const) {
+                      if (next[pages] === 'pending') {
+                        next = await setRegressionCaseStatus(pages, 'pass');
+                      }
+                    }
+                    setRegressionRows(next);
+                    setRegressionMessage('All pending runs marked as PASS.');
+                  } finally {
+                    setRegressionLoading(false);
+                  }
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="checkmark-circle-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Mark pending as PASS</Text>
+                  <Text style={styles.rowHint}>Quickly completes checklist for unmarked runs</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={shareRegressionReport}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="share-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Share regression report</Text>
+                  <Text style={styles.rowHint}>Opens share sheet with compact checklist summary</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+              {regressionReportActionAt ? (
+                <View style={styles.metricsMessageWrap}>
+                  <Text style={styles.metricsMessageText}>{regressionReportActionAt}</Text>
+                </View>
+              ) : null}
               <View style={styles.divider} />
             </>
           )}
@@ -570,5 +1132,90 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeXs,
     lineHeight: 18,
     marginBottom: 4,
+  },
+  metricsCard: {
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    gap: Spacing.xs,
+  },
+  metricsRow: {
+    gap: 2,
+  },
+  metricsName: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  metricsValue: {
+    fontSize: Typography.fontSizeXs,
+  },
+  metricsGood: {
+    color: Colors.primary,
+  },
+  metricsBad: {
+    color: Colors.danger,
+  },
+  metricsMessageWrap: {
+    paddingHorizontal: Spacing.base,
+    paddingBottom: Spacing.sm,
+  },
+  metricsMessageText: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+  },
+  regressionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  regressionScoreRow: {
+    gap: 2,
+    marginBottom: Spacing.xs,
+  },
+  regressionScoreText: {
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  regressionScoreGood: {
+    color: Colors.primary,
+  },
+  regressionScoreWarn: {
+    color: Colors.textSecondary,
+  },
+  regressionScoreBad: {
+    color: Colors.danger,
+  },
+  regressionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  regressionBtn: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  regressionBtnPass: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.14)',
+  },
+  regressionBtnFail: {
+    borderColor: Colors.danger,
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+  },
+  regressionBtnText: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  regressionBtnTextActive: {
+    color: Colors.primary,
+  },
+  regressionBtnTextFailActive: {
+    color: Colors.danger,
   },
 });

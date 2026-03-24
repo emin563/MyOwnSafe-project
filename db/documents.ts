@@ -82,10 +82,15 @@ export async function deleteDocument(id: number): Promise<void> {
   await db.runAsync('DELETE FROM documents WHERE id = ?', [id]);
 }
 
-export async function searchDocuments(query: string, includeOcr: boolean = true): Promise<Document[]> {
+export async function searchDocuments(
+  query: string,
+  includeOcr: boolean = true,
+  limit: number = 200
+): Promise<Document[]> {
   const db = await getDb();
   const like = `%${query}%`;
   const ocrClause = includeOcr ? ' OR d.ocr_text LIKE ?' : '';
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 200;
   return db.getAllAsync<Document>(
     `SELECT d.* FROM documents d
      WHERE d.title LIKE ? OR d.notes LIKE ?
@@ -95,8 +100,9 @@ export async function searchDocuments(query: string, includeOcr: boolean = true)
          JOIN tags t ON t.id = dt.tag_id
          WHERE dt.document_id = d.id AND t.name LIKE ?
        )${ocrClause}
-     ORDER BY d.updated_at DESC`,
-    includeOcr ? [like, like, like, like] : [like, like, like]
+     ORDER BY d.updated_at DESC
+     LIMIT ?`,
+    includeOcr ? [like, like, like, like, safeLimit] : [like, like, like, safeLimit]
   );
 }
 

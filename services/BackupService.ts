@@ -4,6 +4,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { beginShareTrace } from '@/services/shareTrace';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '@/db/schema';
+import { getSetting } from '@/db/settings';
 import type { Category, Document, FileType } from '@/db/types';
 
 const ARCHIVE_DIR = `${LegacyFS.documentDirectory}archive/`;
@@ -101,7 +102,12 @@ export async function createBackup(): Promise<void> {
   // 3. Generate zip and write to cache
   const zipBase64 = await zip.generateAsync({ type: 'base64' });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const zipPath = `${LegacyFS.cacheDirectory}VaultBackup_${timestamp}.zip`;
+  const rawVaultName = ((await getSetting('vaultName')) ?? 'Vault').trim() || 'Vault';
+  const safeVaultName = rawVaultName
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 40) || 'Vault';
+  const zipPath = `${LegacyFS.cacheDirectory}${safeVaultName}_Backup_${timestamp}.zip`;
   await LegacyFS.writeAsStringAsync(zipPath, zipBase64, {
     encoding: LegacyFS.EncodingType.Base64,
   });
@@ -151,7 +157,7 @@ export async function restoreFromBackup(): Promise<boolean> {
   const zipUri = result.assets[0].uri;
 
   const zipInfo = await LegacyFS.getInfoAsync(zipUri).catch(() => null);
-  if (zipInfo && typeof zipInfo.size === 'number' && zipInfo.size > MAX_ZIP_BYTES) {
+  if (zipInfo?.exists && 'size' in zipInfo && typeof zipInfo.size === 'number' && zipInfo.size > MAX_ZIP_BYTES) {
     throw new Error('Backup file too large to restore.');
   }
 

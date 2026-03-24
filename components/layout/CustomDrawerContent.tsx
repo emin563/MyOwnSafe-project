@@ -31,7 +31,7 @@ const CATEGORY_ICONS = [
   'school-outline',
 ];
 
-export function CustomDrawerContent(_props: DrawerContentComponentProps) {
+export function CustomDrawerContent(props: DrawerContentComponentProps) {
   const insets = useSafeAreaInsets();
   const footerPaddingBottom = Math.max(insets.bottom, 32);
   const {
@@ -50,6 +50,8 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     setSearchQuery,
     runSearch,
     setIsPro,
+    vaultName,
+    setVaultName,
   } = useAppStore();
 
   const [addModalVisible, setAddModalVisible] = useState(false);
@@ -64,6 +66,7 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
   const [limitVisible, setLimitVisible] = useState(false);
   const [limitKind, setLimitKind] = useState<'categories'>('categories');
   const [pendingCategoryName, setPendingCategoryName] = useState<string | null>(null);
+  const [vaultNameModalVisible, setVaultNameModalVisible] = useState(false);
   const categoriesListRef = React.useRef<FlatList<Category> | null>(null);
   const searchDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestSearchQueryRef = React.useRef<string>('');
@@ -72,12 +75,14 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
     setSelectedCategoryId(id);
     loadDocuments(id);
     router.replace('/(drawer)');
+    props.navigation.closeDrawer();
   };
 
   const handleSelectTag = (tagId: number) => {
     setSelectedTagId(tagId);
     loadDocumentsByTag(tagId);
     router.replace('/(drawer)');
+    props.navigation.closeDrawer();
   };
 
   const handleSearch = (q: string) => {
@@ -191,7 +196,19 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           <View style={styles.brandIcon}>
             <Ionicons name="shield-checkmark" size={20} color={Colors.primary} />
           </View>
-          <Text style={styles.brandName}>Vault</Text>
+          <Text style={styles.brandName} numberOfLines={1}>
+            {vaultName}
+          </Text>
+          <TouchableOpacity
+            style={styles.brandEditBtn}
+            onPress={() => setVaultNameModalVisible(true)}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Edit vault name"
+          >
+            <Ionicons name="pencil-outline" size={14} color={Colors.textMuted} />
+          </TouchableOpacity>
         </View>
 
         <View style={styles.header}>
@@ -201,7 +218,13 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
             onChangeText={handleSearch}
             containerStyle={styles.search}
           />
-          <IconButton onPress={() => router.push('/capture')} size={40}>
+          <IconButton
+            onPress={() => {
+              router.push('/capture');
+              props.navigation.closeDrawer();
+            }}
+            size={40}
+          >
             <Ionicons name="add" size={20} color={Colors.text} />
           </IconButton>
         </View>
@@ -209,7 +232,10 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         <View style={styles.newButtons}>
           <TouchableOpacity
             style={styles.newButton}
-            onPress={() => router.push('/capture')}
+            onPress={() => {
+              router.push('/capture');
+              props.navigation.closeDrawer();
+            }}
             activeOpacity={0.7}
           >
             <Ionicons name="camera-outline" size={16} color={Colors.textSecondary} />
@@ -217,7 +243,10 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.newButton}
-            onPress={() => router.push({ pathname: '/capture', params: { tab: 'import' } })}
+            onPress={() => {
+              router.push({ pathname: '/capture', params: { tab: 'import' } });
+              props.navigation.closeDrawer();
+            }}
             activeOpacity={0.7}
           >
             <Ionicons name="document-attach-outline" size={16} color={Colors.textSecondary} />
@@ -362,6 +391,18 @@ export function CustomDrawerContent(_props: DrawerContentComponentProps) {
         onConfirm={handleEditCategory}
         onCancel={() => setEditModal({ visible: false, category: null })}
       />
+      <InputModal
+        visible={vaultNameModalVisible}
+        title="Rename Vault"
+        placeholder="e.g. My Vault"
+        initialValue={vaultName}
+        confirmLabel="Save"
+        onConfirm={async (name) => {
+          await setVaultName(name);
+          setVaultNameModalVisible(false);
+        }}
+        onCancel={() => setVaultNameModalVisible(false)}
+      />
       <ConfirmModal
         visible={deleteModal.visible}
         title="Delete Category"
@@ -417,10 +458,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   brandName: {
+    flex: 1,
     color: Colors.text,
     fontSize: Typography.fontSizeMd,
     fontWeight: Typography.fontWeightBold,
     letterSpacing: 0.5,
+  },
+  brandEditBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   header: {
     flexDirection: 'row',

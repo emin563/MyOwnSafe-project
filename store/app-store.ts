@@ -36,7 +36,7 @@ import {
 } from '@/services/NotificationService';
 import { copyFileInArchive } from '@/services/StorageService';
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
-import { FREE_OCR_READ_TRIALS, getFreeLimit, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
+import { getFreeLimit, getOcrReadTrialsRemaining, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
 import { LimitError } from '@/services/LimitError';
 type AppStore = {
   categories: Category[];
@@ -68,12 +68,18 @@ type AppStore = {
   firstLaunchAt: number | null;
   /** True when user is within the first 7 days after firstLaunchAt. */
   isIntroEligible: boolean;
+  /** User-facing vault name for light personalization. */
+  vaultName: string;
+  /** One-time onboarding prompt visibility for naming the vault (optional). */
+  vaultNamePromptVisible: boolean;
+  setVaultName: (name: string) => Promise<void>;
+  dismissVaultNamePrompt: () => Promise<void>;
 
   // OCR: on-device text extraction (opt-in on Add → Camera / Import)
   /** When true, new images may run on-device text extraction (subject to Pro/trials). Off by default — privacy. */
   ocrExtractOnCapture: boolean;
   setOcrExtractOnCapture: (enabled: boolean) => Promise<void>;
-  /** Non‑Pro photo text extractions already used (lifetime; not refunded on delete). */
+  /** Non‑Pro photo text extractions already used (counter increases over time; free allowance also grows weekly). */
   ocrReadTrialsUsed: number;
   /**
    * Temporary OCR draft used for multi-scan (multi-page camera mode) where we extract from the
@@ -89,6 +95,17 @@ type AppStore = {
   consumeOcrReadTrial: () => Promise<boolean>;
   /** Dev only: reset free OCR trials counter for testing. */
   resetOcrReadTrialsForDev: () => Promise<void>;
+  /** User dismissed multi-page tested-limit disclaimer. */
+  multiPageLimitDisclaimerDismissed: boolean;
+  setMultiPageLimitDisclaimerDismissed: (dismissed: boolean) => Promise<void>;
+  captureQualityProfile: 'fast' | 'balanced' | 'max';
+  setCaptureQualityProfile: (profile: 'fast' | 'balanced' | 'max') => Promise<void>;
+  pdfPagePlacementMode: 'fit' | 'fill';
+  setPdfPagePlacementMode: (mode: 'fit' | 'fill') => Promise<void>;
+  ocrProcessingMode: 'auto' | 'document' | 'receipt' | 'handwritten';
+  setOcrProcessingMode: (mode: 'auto' | 'document' | 'receipt' | 'handwritten') => Promise<void>;
+  ocrLanguage: 'auto' | 'en' | 'tr';
+  setOcrLanguage: (lang: 'auto' | 'en' | 'tr') => Promise<void>;
 
   // Toast (lightweight UX feedback)
   toast: { message: string; type?: 'success' | 'danger' | 'info' } | null;
@@ -174,8 +191,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isPro: false,
   firstLaunchAt: null,
   isIntroEligible: false,
+  vaultName: 'My Vault',
+  vaultNamePromptVisible: false,
   ocrExtractOnCapture: false,
   ocrReadTrialsUsed: 0,
+  multiPageLimitDisclaimerDismissed: false,
+  captureQualityProfile: 'balanced',
+  pdfPagePlacementMode: 'fill',
+  ocrProcessingMode: 'auto',
+  ocrLanguage: 'auto',
   pendingOcrText: null,
   toast: null,
   pendingBulkImports: [],
@@ -210,18 +234,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const biometricVal = await getSetting('biometricEnabled');
     const proVal = await getSetting('isPro');
     const firstLaunchAtVal = await getSetting('firstLaunchAt');
+    const vaultNameVal = await getSetting('vaultName');
+    const vaultNamePromptSeenVal = await getSetting('vaultNamePromptSeen');
     const ocrExtractVal = await getSetting('ocrExtractOnCapture');
     const ocrReadTrialsUsedVal = await getSetting('ocrReadTrialsUsed');
+    const multiPageLimitDisclaimerDismissedVal = await getSetting('multiPageLimitDisclaimerDismissed');
+    const captureQualityProfileVal = await getSetting('captureQualityProfile');
+    const pdfPagePlacementModeVal = await getSetting('pdfPagePlacementMode');
+    const ocrProcessingModeVal = await getSetting('ocrProcessingMode');
+    const ocrLanguageVal = await getSetting('ocrLanguage');
     const pinEnabled = pinEnabledVal === 'true';
     const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
+    const savedVaultName = (vaultNameVal ?? '').trim();
+    const vaultName = savedVaultName || 'My Vault';
+    const vaultNamePromptSeen = vaultNamePromptSeenVal === 'true';
     const ocrExtractOnCapture = ocrExtractVal === 'true';
+    const multiPageLimitDisclaimerDismissed = multiPageLimitDisclaimerDismissedVal === 'true';
+    const captureQualityProfile =
+      captureQualityProfileVal === 'fast' || captureQualityProfileVal === 'max'
+        ? captureQualityProfileVal
+        : 'balanced';
+    const pdfPagePlacementMode = pdfPagePlacementModeVal === 'fit' ? 'fit' : 'fill';
+    const ocrProcessingMode =
+      ocrProcessingModeVal === 'document' ||
+      ocrProcessingModeVal === 'receipt' ||
+      ocrProcessingModeVal === 'handwritten'
+        ? ocrProcessingModeVal
+        : 'auto';
+    const ocrLanguage = ocrLanguageVal === 'en' || ocrLanguageVal === 'tr' ? ocrLanguageVal : 'auto';
     let ocrReadTrialsUsed = ocrReadTrialsUsedVal != null ? Number.parseInt(ocrReadTrialsUsedVal, 10) : 0;
     if (!Number.isFinite(ocrReadTrialsUsed) || ocrReadTrialsUsed < 0) {
       ocrReadTrialsUsed = 0;
-    }
-    if (ocrReadTrialsUsed > FREE_OCR_READ_TRIALS) {
-      ocrReadTrialsUsed = FREE_OCR_READ_TRIALS;
     }
     const now = Date.now();
     let firstLaunchAt = firstLaunchAtVal ? Number(firstLaunchAtVal) : NaN;
@@ -232,6 +276,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     const isIntroEligible = now - firstLaunchAt < SEVEN_DAYS_MS;
     const lockActive = pinEnabled || biometricEnabled;
+    if (!savedVaultName) {
+      await setSetting('vaultName', vaultName);
+    }
     set({
       pinEnabled,
       pinHash,
@@ -239,10 +286,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       isPro,
       firstLaunchAt,
       isIntroEligible,
+      vaultName,
+      vaultNamePromptVisible: !vaultNamePromptSeen,
       ocrExtractOnCapture,
+      multiPageLimitDisclaimerDismissed,
+      captureQualityProfile,
+      pdfPagePlacementMode,
+      ocrProcessingMode,
+      ocrLanguage,
       ocrReadTrialsUsed,
       isUnlocked: !lockActive,
     });
+  },
+
+  setVaultName: async (name) => {
+    const next = name.trim() || 'My Vault';
+    await setSetting('vaultName', next);
+    await setSetting('vaultNamePromptSeen', 'true');
+    set({ vaultName: next, vaultNamePromptVisible: false });
+  },
+
+  dismissVaultNamePrompt: async () => {
+    await setSetting('vaultNamePromptSeen', 'true');
+    set({ vaultNamePromptVisible: false });
   },
 
   setPinEnabled: async (enabled, pin) => {
@@ -287,8 +353,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Pro does not cap OCR reads.
     if (get().isPro) return true;
     const usedBefore = get().ocrReadTrialsUsed;
-    if (usedBefore >= FREE_OCR_READ_TRIALS) return false;
-    const next = Math.min(FREE_OCR_READ_TRIALS, usedBefore + 1);
+    const remaining = getOcrReadTrialsRemaining(usedBefore, get().firstLaunchAt);
+    if (remaining <= 0) return false;
+    const next = usedBefore + 1;
     await setSetting('ocrReadTrialsUsed', String(next));
     set({ ocrReadTrialsUsed: next });
     return true;
@@ -298,6 +365,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
     await setSetting('ocrReadTrialsUsed', '0');
     set({ ocrReadTrialsUsed: 0 });
     get().showToast('OCR free trials reset (dev)', 'success');
+  },
+
+  setMultiPageLimitDisclaimerDismissed: async (dismissed) => {
+    await setSetting('multiPageLimitDisclaimerDismissed', String(dismissed));
+    set({ multiPageLimitDisclaimerDismissed: dismissed });
+  },
+
+  setCaptureQualityProfile: async (profile) => {
+    await setSetting('captureQualityProfile', profile);
+    set({ captureQualityProfile: profile });
+  },
+
+  setPdfPagePlacementMode: async (mode) => {
+    await setSetting('pdfPagePlacementMode', mode);
+    set({ pdfPagePlacementMode: mode });
+  },
+  setOcrProcessingMode: async (mode) => {
+    await setSetting('ocrProcessingMode', mode);
+    set({ ocrProcessingMode: mode });
+  },
+  setOcrLanguage: async (lang) => {
+    await setSetting('ocrLanguage', lang);
+    set({ ocrLanguage: lang });
   },
 
   showToast: (message, type = 'info') => {
@@ -432,7 +522,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           pending.ocrText.trim() === preOcrText;
 
         if (!get().isPro && !isTrustedPendingDraft) {
-          const remaining = Math.max(0, FREE_OCR_READ_TRIALS - get().ocrReadTrialsUsed);
+          const remaining = getOcrReadTrialsRemaining(get().ocrReadTrialsUsed, get().firstLaunchAt);
           if (remaining <= 0) {
             // Quota exhausted: do not persist OCR text.
           } else {
@@ -466,12 +556,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
         await updateDocumentOcrText(docId, copyOcr);
       } else if (!get().ocrExtractOnCapture) {
         // Opt-in off: no new extraction (privacy).
-      } else if (!get().isPro && get().ocrReadTrialsUsed >= FREE_OCR_READ_TRIALS) {
+      } else if (!get().isPro && getOcrReadTrialsRemaining(get().ocrReadTrialsUsed, get().firstLaunchAt) <= 0) {
         // Free tier exhausted: no new extraction (search still works for docs that already have text).
       } else {
         (async () => {
-          const usedBefore = get().ocrReadTrialsUsed;
-          const isPro = get().isPro;
           const result = await extractTextFromImageIfAvailable(fileUri);
           if (!result.ok) {
             if (result.reason === 'expo-go') {
@@ -505,10 +593,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
           if (result.text) {
             await updateDocumentOcrText(docId, result.text);
           }
-          if (!isPro && usedBefore < FREE_OCR_READ_TRIALS) {
-            const next = Math.min(FREE_OCR_READ_TRIALS, usedBefore + 1);
-            await setSetting('ocrReadTrialsUsed', String(next));
-            set({ ocrReadTrialsUsed: next });
+          if (result.text) {
+            await get().consumeOcrReadTrial();
           }
         })();
       }

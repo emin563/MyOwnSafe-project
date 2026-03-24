@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, TextInput } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Colors, Spacing, Typography } from '@/theme';
+import { recordPerformanceMetric } from '@/services/performanceMetrics';
+import { getLastPdfPage, setLastPdfPage } from '@/services/pdfViewState';
 
 type Props = {
   uri: string;
@@ -26,7 +28,11 @@ function normalizeFileUri(uri: string): string {
 export function PdfDocumentViewImpl({ uri }: Props) {
   const [pages, setPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
+  const [targetPageInput, setTargetPageInput] = useState('1');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const lastInitializedUriRef = useRef<string | null>(null);
+  const openStartedAtRef = useRef<number>(Date.now());
+  const pageSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const Pdf = useMemo(() => {
     if (isExpoGo()) return null;
@@ -42,6 +48,7 @@ export function PdfDocumentViewImpl({ uri }: Props) {
         enablePaging?: boolean;
         horizontal?: boolean;
         fitPolicy?: number;
+        page?: number;
       }>;
     } catch {
       return null;
@@ -49,6 +56,19 @@ export function PdfDocumentViewImpl({ uri }: Props) {
   }, []);
 
   const sourceUri = normalizeFileUri(uri);
+  const source = useMemo(() => ({ uri: sourceUri, cache: true }), [sourceUri]);
+
+  useEffect(() => {
+    openStartedAtRef.current = Date.now();
+  }, [sourceUri]);
+
+  useEffect(() => {
+    return () => {
+      if (pageSaveDebounceRef.current) {
+        clearTimeout(pageSaveDebounceRef.current);
+      }
+    };
+  }, []);
 
   if (isExpoGo() || !Pdf) {
     return (
@@ -65,20 +85,40 @@ export function PdfDocumentViewImpl({ uri }: Props) {
   return (
     <View style={styles.wrap}>
       <Pdf
-        source={{ uri: sourceUri, cache: true }}
+        source={source}
         style={styles.pdf}
         trustAllCerts={false}
         enablePaging
         horizontal={false}
         fitPolicy={0}
+        page={Math.max(1, currentPage || 1)}
         onLoadComplete={(numberOfPages) => {
+          const shouldInitForUri = lastInitializedUriRef.current !== sourceUri;
+          if (shouldInitForUri) {
+            lastInitializedUriRef.current = sourceUri;
+          }
           setLoadError(null);
           setPages(numberOfPages);
-          setCurrentPage(1);
+          if (shouldInitForUri) {
+            void (async () => {
+              const saved = await getLastPdfPage(sourceUri);
+              const initialPage = Math.min(numberOfPages, Math.max(1, saved ?? 1));
+              setCurrentPage(initialPage);
+              setTargetPageInput(String(initialPage));
+              void recordPerformanceMetric('open_pdf', Date.now() - openStartedAtRef.current);
+            })();
+          }
         }}
         onPageChanged={(page, numberOfPages) => {
           setCurrentPage(page);
           setPages(numberOfPages);
+          setTargetPageInput(String(page));
+          if (pageSaveDebounceRef.current) {
+            clearTimeout(pageSaveDebounceRef.current);
+          }
+          pageSaveDebounceRef.current = setTimeout(() => {
+            void setLastPdfPage(sourceUri, page);
+          }, 350);
         }}
         onError={(error) => {
           setLoadError(error?.message ?? 'Could not load PDF');
@@ -87,6 +127,37 @@ export function PdfDocumentViewImpl({ uri }: Props) {
       {loadError ? (
         <View style={styles.banner}>
           <Text style={styles.bannerText}>{loadError}</Text>
+        </View>
+      ) : null}
+      {pages > 1 ? (
+        <View style={styles.scrubber}>
+          <TouchableOpacity
+            style={styles.navBtn}
+            onPress={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.navBtnText}>-</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={styles.pageInput}
+            value={targetPageInput}
+            onChangeText={setTargetPageInput}
+            keyboardType="number-pad"
+            returnKeyType="done"
+            onSubmitEditing={() => {
+              const parsed = Number.parseInt(targetPageInput, 10);
+              if (Number.isNaN(parsed)) return;
+              setCurrentPage(Math.min(pages, Math.max(1, parsed)));
+            }}
+          />
+          <Text style={styles.scrubberLabel}>/ {pages}</Text>
+          <TouchableOpacity
+            style={styles.navBtn}
+            onPress={() => setCurrentPage((p) => Math.min(pages, p + 1))}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.navBtnText}>+</Text>
+          </TouchableOpacity>
         </View>
       ) : null}
       {pages > 0 ? (
@@ -156,6 +227,52 @@ const styles = StyleSheet.create({
     color: Colors.danger,
     fontSize: Typography.fontSizeSm,
     textAlign: 'center',
+  },
+  scrubber: {
+    position: 'absolute',
+    left: Spacing.base,
+    right: Spacing.base,
+    bottom: Spacing.xl + 28,
+    backgroundColor: Colors.surfaceRaised,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  scrubberLabel: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+  },
+  pageInput: {
+    minWidth: 52,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 8,
+    textAlign: 'center',
+    color: Colors.text,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    fontSize: Typography.fontSizeSm,
+  },
+  navBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surfaceHighlight,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  navBtnText: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
   },
 });
 

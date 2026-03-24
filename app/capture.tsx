@@ -16,6 +16,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
+import * as LegacyFS from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -29,8 +30,72 @@ import { createPdfFromImages } from '@/services/PdfService';
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
+import { recordPerformanceMetric } from '@/services/performanceMetrics';
+import { recordOcrPageMetric } from '@/services/ocrMetrics';
 
 const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
+const PDF_BUILD_TIMEOUT_MS = 6 * 60 * 1000;
+type CaptureQualityProfile = 'fast' | 'balanced' | 'max';
+type PdfPagePlacementMode = 'fit' | 'fill';
+type OcrProcessingMode = 'auto' | 'document' | 'receipt' | 'handwritten';
+type OcrLanguage = 'auto' | 'en' | 'tr';
+const OCR_PAGE_TIMEOUT_MS = 8000;
+
+function getMultiPageCaptureQuality(pageCount: number, profile: CaptureQualityProfile): number {
+  if (profile === 'max') {
+    if (pageCount >= 800) return 0.03;
+    if (pageCount >= 600) return 0.04;
+    if (pageCount >= 400) return 0.06;
+    if (pageCount >= 250) return 0.08;
+    if (pageCount >= 100) return 0.12;
+    if (pageCount >= 20) return 0.2;
+    if (pageCount >= 10) return 0.3;
+    return 0.45;
+  }
+  if (profile === 'fast') {
+    if (pageCount >= 800) return 0.015;
+    if (pageCount >= 600) return 0.02;
+    if (pageCount >= 400) return 0.03;
+    if (pageCount >= 250) return 0.05;
+    if (pageCount >= 100) return 0.07;
+    if (pageCount >= 20) return 0.1;
+    if (pageCount >= 10) return 0.16;
+    return 0.28;
+  }
+  if (pageCount >= 800) return 0.02;
+  if (pageCount >= 600) return 0.03;
+  if (pageCount >= 400) return 0.04;
+  if (pageCount >= 250) return 0.06;
+  if (pageCount >= 100) return 0.08;
+  if (pageCount >= 20) return 0.12;
+  if (pageCount >= 10) return 0.2;
+  return 0.35;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function isWeakOcrText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+  if (t.length < 30) return true;
+  const letters = (t.match(/[A-Za-z\u00C0-\u024F\u0100-\u017F]/g) ?? []).length;
+  return letters / Math.max(1, t.length) < 0.35;
+}
 
 export default function CaptureScreen() {
   const { tab: paramTab } = useLocalSearchParams<{ tab?: string }>();
@@ -46,16 +111,36 @@ export default function CaptureScreen() {
   const [limitVisible, setLimitVisible] = useState(false);
   const [limitKind, setLimitKind] = useState<'documents'>('documents');
   const [paywallVisible, setPaywallVisible] = useState(false);
+  const [showLongOpOverlay, setShowLongOpOverlay] = useState(false);
+  const [longOpMessage, setLongOpMessage] = useState('Loading, this may take a few minutes');
+  const [longOpPercent, setLongOpPercent] = useState<number | null>(null);
+  const [stressTargetPickerVisible, setStressTargetPickerVisible] = useState(false);
+  const [multiPageDisclaimerVisible, setMultiPageDisclaimerVisible] = useState(false);
+  const [multiPageDontShowAgain, setMultiPageDontShowAgain] = useState(false);
   const [pendingAfterUpgradeAction, setPendingAfterUpgradeAction] = useState<null | 'capture' | 'finishMultiPage'>(null);
+  const [ocrOptionsVisible, setOcrOptionsVisible] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
+  const finishingMultiPageRef = useRef(false);
+  const captureStartedAtRef = useRef<number | null>(null);
 
   const isPro = useAppStore((s) => s.isPro);
   const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
+  const firstLaunchAt = useAppStore((s) => s.firstLaunchAt);
   const ocrExtractOnCapture = useAppStore((s) => s.ocrExtractOnCapture);
   const setOcrExtractOnCapture = useAppStore((s) => s.setOcrExtractOnCapture);
   const consumeOcrReadTrial = useAppStore((s) => s.consumeOcrReadTrial);
   const setPendingOcrText = useAppStore((s) => s.setPendingOcrText);
   const showToast = useAppStore((s) => s.showToast);
+  const multiPageLimitDisclaimerDismissed = useAppStore((s) => s.multiPageLimitDisclaimerDismissed);
+  const setMultiPageLimitDisclaimerDismissed = useAppStore((s) => s.setMultiPageLimitDisclaimerDismissed);
+  const captureQualityProfile = useAppStore((s) => s.captureQualityProfile);
+  const setCaptureQualityProfile = useAppStore((s) => s.setCaptureQualityProfile);
+  const pdfPagePlacementMode = useAppStore((s) => s.pdfPagePlacementMode);
+  const setPdfPagePlacementMode = useAppStore((s) => s.setPdfPagePlacementMode);
+  const ocrProcessingMode = useAppStore((s) => s.ocrProcessingMode);
+  const setOcrProcessingMode = useAppStore((s) => s.setOcrProcessingMode);
+  const ocrLanguage = useAppStore((s) => s.ocrLanguage);
+  const setOcrLanguage = useAppStore((s) => s.setOcrLanguage);
   const ocrExtractActive = ocrExtractOnCapture;
   const loadSettings = useAppStore((s) => s.loadSettings);
 
@@ -65,7 +150,7 @@ export default function CaptureScreen() {
     }, [loadSettings])
   );
 
-  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed);
+  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed, firstLaunchAt);
   const headerTitle =
     activeTab === 'camera' && !isPro
       ? `Add Document (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left)`
@@ -84,6 +169,24 @@ export default function CaptureScreen() {
       requestPermission();
     }
   }, [activeTab, permission?.granted, requestPermission]);
+
+  useEffect(() => {
+    if (!capturing) {
+      setShowLongOpOverlay(false);
+      captureStartedAtRef.current = null;
+      setLongOpMessage('Loading, this may take a few minutes');
+      setLongOpPercent(null);
+      return;
+    }
+    captureStartedAtRef.current = Date.now();
+    const timeoutId = setTimeout(() => {
+      setShowLongOpOverlay(true);
+      if (captureStartedAtRef.current != null) {
+        void recordPerformanceMetric('show_progress_latency', Date.now() - captureStartedAtRef.current);
+      }
+    }, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [capturing]);
 
   const checkSlotLimit = async (): Promise<boolean> => {
     const { isPro } = useAppStore.getState();
@@ -106,16 +209,22 @@ export default function CaptureScreen() {
       return;
     }
     setPendingAfterUpgradeAction(null);
+    const flowStartedAt = Date.now();
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
+      // Reduce multi-page image payload to avoid OOM in expo-print when many pages are merged.
+      const captureQuality = multiPageMode
+        ? getMultiPageCaptureQuality(multiPageImages.length, captureQualityProfile)
+        : 0.9;
+      const photo = await cameraRef.current.takePictureAsync({ quality: captureQuality });
       if (!photo?.uri) return;
       if (multiPageMode) {
         setMultiPageImages((prev) => [...prev, photo.uri]);
         return;
       }
       const permanentUri = await saveFileToArchive(photo.uri);
+      void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
       router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
     } catch (error) {
       Alert.alert('Capture Failed', 'Could not capture the photo. Please try again.');
@@ -126,10 +235,60 @@ export default function CaptureScreen() {
 
   const handleFinishMultiPage = async () => {
     if (capturing) return;
+    if (finishingMultiPageRef.current) {
+      return;
+    }
     if (multiPageImages.length === 0) return;
+    if (multiPageImages.length > MULTI_PAGE_TESTED_LIMIT) {
+      Alert.alert(
+        'Large run warning',
+        `This export has ${multiPageImages.length} pages. Your device may run out of memory above ${MULTI_PAGE_TESTED_LIMIT} pages.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Save first 300',
+            onPress: () => {
+              const firstPart = multiPageImages.slice(0, 300);
+              if (firstPart.length === 0) return;
+              setMultiPageImages(firstPart);
+              showToast('Prepared first 300 pages. Tap Finish again to export safely.', 'info');
+            },
+          },
+          {
+            text: 'Switch to Fast',
+            onPress: () => {
+              void setCaptureQualityProfile('fast');
+              showToast('Capture profile switched to Fast for better stability.', 'info');
+            },
+          },
+          {
+            text: 'Continue anyway',
+            style: 'destructive',
+            onPress: () => {
+              finishingMultiPageRef.current = false;
+              setTimeout(() => {
+                void handleFinishMultiPageUnsafe();
+              }, 0);
+            },
+          },
+        ]
+      );
+      return;
+    }
+    await handleFinishMultiPageUnsafe();
+  };
+
+  const handleFinishMultiPageUnsafe = async () => {
+    if (capturing) return;
+    if (finishingMultiPageRef.current) {
+      return;
+    }
+    if (multiPageImages.length === 0) return;
+    finishingMultiPageRef.current = true;
     setPendingAfterUpgradeAction('finishMultiPage');
     if (!(await checkSlotLimit())) return;
     setPendingAfterUpgradeAction(null);
+    const flowStartedAt = Date.now();
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -137,12 +296,23 @@ export default function CaptureScreen() {
       // Multi-scan generates a PDF, but OCR must run against the original page images.
       let preExtractedOcrText: string | null = null;
       if (ocrExtractOnCapture) {
-        const pages: string[] = [];
+        const pageResults: Array<string | null> = new Array(multiPageImages.length).fill(null);
+        const weakPageIndexes: number[] = [];
         // Extract sequentially for stability (native OCR is CPU/GPU heavy).
         for (let pageIndex = 0; pageIndex < multiPageImages.length; pageIndex++) {
           const pageUri = multiPageImages[pageIndex];
-          const result = await extractTextFromImageIfAvailable(pageUri);
+          const ocrPageStartedAt = Date.now();
+          const result = await withTimeout(
+            extractTextFromImageIfAvailable(pageUri, { mode: ocrProcessingMode, language: ocrLanguage }),
+            OCR_PAGE_TIMEOUT_MS,
+            'OCR page timed out'
+          ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR timeout' }));
           if (!result.ok) {
+            await recordOcrPageMetric({
+              latencyMs: Date.now() - ocrPageStartedAt,
+              failed: true,
+              timedOut: /timeout/i.test(result.message ?? ''),
+            });
             if (result.reason === 'expo-go') {
               try {
                   await setOcrExtractOnCapture(false);
@@ -153,33 +323,103 @@ export default function CaptureScreen() {
               } catch {
                 // ignore
               }
-              pages.length = 0;
+              for (let i = 0; i < pageResults.length; i += 1) {
+                pageResults[i] = null;
+              }
               break;
             }
               if (result.reason === 'web') break;
             if (result.reason === 'unsupported') break;
             if (result.reason === 'error') {
               if (__DEV__) console.warn('[OCR]', result.message);
+              showToast('OCR failed on this page. Try better lighting or steadier capture.', 'info');
             }
             continue;
           }
           if (result.text && result.text.trim()) {
+            const weak = isWeakOcrText(result.text);
+            if (weak) weakPageIndexes.push(pageIndex);
+            await recordOcrPageMetric({
+              latencyMs: Date.now() - ocrPageStartedAt,
+              weak,
+            });
             const consumed = await consumeOcrReadTrial();
             if (!consumed) break;
-            pages.push(result.text.trim());
+            pageResults[pageIndex] = result.text.trim();
           }
         }
 
-        if (pages.length > 0) {
-          preExtractedOcrText = pages
-            .map((t, i) => `=== Page ${i + 1} ===\n${t}`)
+        // Retry weak pages once with document mode for cleaner output.
+        if (weakPageIndexes.length > 0) {
+          for (const weakIndex of weakPageIndexes) {
+            const pageUri = multiPageImages[weakIndex];
+            const retryStartedAt = Date.now();
+            const retried = await withTimeout(
+              extractTextFromImageIfAvailable(pageUri, { mode: 'document', language: ocrLanguage }),
+              OCR_PAGE_TIMEOUT_MS,
+              'OCR retry timed out'
+            ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR retry timeout' }));
+            if (!retried.ok || !retried.text?.trim()) {
+              const retryMessage = !retried.ok ? retried.message ?? '' : '';
+              await recordOcrPageMetric({
+                latencyMs: Date.now() - retryStartedAt,
+                retried: true,
+                failed: true,
+                timedOut: /timeout/i.test(retryMessage),
+              });
+              continue;
+            }
+            const improved = !isWeakOcrText(retried.text);
+            await recordOcrPageMetric({
+              latencyMs: Date.now() - retryStartedAt,
+              retried: true,
+              improved,
+            });
+            if (improved) {
+              pageResults[weakIndex] = retried.text.trim();
+            }
+          }
+          showToast('OCR retry completed for weak pages.', 'info');
+        }
+
+        const finalizedPages = pageResults
+          .map((text, idx) => (text ? { pageNumber: idx + 1, text } : null))
+          .filter((v): v is { pageNumber: number; text: string } => v != null);
+
+        if (finalizedPages.length > 0) {
+          preExtractedOcrText = finalizedPages
+            .map((p) => `=== Page ${p.pageNumber} ===\n${p.text}`)
             .join('\n\n');
         }
       }
 
-      const pdfTempUri = await createPdfFromImages(multiPageImages);
+      const updatePdfProgress = (progress: { stage: 'chunk' | 'merge' | 'finalize'; current: number; total: number }) => {
+        // Weighted estimate: chunking 70%, merge 25%, finalize 5%.
+        const safeRatio = progress.total > 0 ? progress.current / progress.total : 0;
+        if (progress.stage === 'chunk') {
+          const pct = Math.max(1, Math.min(70, Math.round(safeRatio * 70)));
+          setLongOpPercent(pct);
+          setLongOpMessage(`Preparing PDF chunks (${progress.current}/${progress.total})`);
+          return;
+        }
+        if (progress.stage === 'merge') {
+          const pct = Math.max(71, Math.min(95, 70 + Math.round(safeRatio * 25)));
+          setLongOpPercent(pct);
+          setLongOpMessage(`Merging PDF parts (${progress.current}/${progress.total})`);
+          return;
+        }
+        setLongOpPercent(99);
+        setLongOpMessage('Finalizing PDF file');
+      };
+
+      const pdfTempUri = await withTimeout(
+        createPdfFromImages(multiPageImages, updatePdfProgress, { pagePlacementMode: pdfPagePlacementMode }),
+        PDF_BUILD_TIMEOUT_MS,
+        'PDF generation timed out'
+      );
       const pdfName = `scan_${Date.now()}.pdf`;
       const permanentUri = await saveFileToArchive(pdfTempUri, pdfName);
+      void recordPerformanceMetric('scan_to_pdf', Date.now() - flowStartedAt);
 
       setPendingOcrText(
         preExtractedOcrText
@@ -190,8 +430,114 @@ export default function CaptureScreen() {
       setMultiPageImages([]);
       setMultiPageMode(false);
       router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'pdf' } });
-    } catch {
-      Alert.alert('PDF Failed', 'Could not create the PDF. Please try again.');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isLikelyMemoryIssue = /OutOfMemoryError|memory|allocate|OOM/i.test(errorMessage);
+      const isLikelyTimeout = /timed out/i.test(errorMessage);
+      const pageCount = multiPageImages.length;
+      const primaryMessage = isLikelyTimeout
+        ? 'PDF creation took too long on this device. Try 300-page sections for faster and safer results.'
+        : isLikelyMemoryIssue || pageCount > 500
+          ? 'This run is too large for your device memory. Try 300-page sections for better stability.'
+          : 'Could not create the PDF. Please try again.';
+
+      const saveSection = async (sectionSize: number) => {
+        if (capturing) return;
+        if (multiPageImages.length === 0) return;
+        if (!(await checkSlotLimit())) return;
+
+        const currentPages = [...multiPageImages];
+        const sectionPages = currentPages.slice(0, sectionSize);
+        const remainingPages = currentPages.slice(sectionPages.length);
+        if (sectionPages.length === 0) return;
+
+        const sectionFlowStartedAt = Date.now();
+        setCapturing(true);
+        try {
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          const pdfTempUri = await withTimeout(createPdfFromImages(sectionPages, (progress) => {
+            const safeRatio = progress.total > 0 ? progress.current / progress.total : 0;
+            if (progress.stage === 'chunk') {
+              const pct = Math.max(1, Math.min(70, Math.round(safeRatio * 70)));
+              setLongOpPercent(pct);
+              setLongOpMessage(`Preparing PDF chunks (${progress.current}/${progress.total})`);
+              return;
+            }
+            if (progress.stage === 'merge') {
+              const pct = Math.max(71, Math.min(95, 70 + Math.round(safeRatio * 25)));
+              setLongOpPercent(pct);
+              setLongOpMessage(`Merging PDF parts (${progress.current}/${progress.total})`);
+              return;
+            }
+            setLongOpPercent(99);
+            setLongOpMessage('Finalizing PDF file');
+          }, { pagePlacementMode: pdfPagePlacementMode }), PDF_BUILD_TIMEOUT_MS, 'PDF generation timed out');
+          const pdfName = `scan_part_${Date.now()}.pdf`;
+          const permanentUri = await saveFileToArchive(pdfTempUri, pdfName);
+          void recordPerformanceMetric('scan_to_pdf', Date.now() - sectionFlowStartedAt);
+
+          setPendingOcrText(null);
+          setMultiPageImages(remainingPages);
+          setMultiPageMode(remainingPages.length > 0);
+          showToast(
+            remainingPages.length > 0
+              ? `Saved first ${sectionPages.length} pages. ${remainingPages.length} pages remain.`
+              : `Saved ${sectionPages.length} pages successfully.`,
+            'success'
+          );
+          router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'pdf' } });
+        } catch {
+          Alert.alert('PDF Failed', 'Section export failed. Please reduce the section size and retry.');
+        } finally {
+          setCapturing(false);
+        }
+      };
+
+      const actions: { text: string; style?: 'default' | 'cancel' | 'destructive'; onPress?: () => void }[] = [
+        { text: 'Retry', onPress: () => { void handleFinishMultiPage(); } },
+      ];
+
+      if (pageCount > 300 || isLikelyMemoryIssue || isLikelyTimeout) {
+        actions.push({
+          text: 'Save First 300 Pages',
+          onPress: () => { void saveSection(300); },
+        });
+      }
+
+      actions.push({ text: 'Close', style: 'cancel' });
+      Alert.alert('PDF Failed', primaryMessage, actions);
+    } finally {
+      finishingMultiPageRef.current = false;
+      setCapturing(false);
+    }
+  };
+
+  const handleAutoStressCapture = async (targetCount: number) => {
+    if (!cameraRef.current || capturing) return;
+    if (targetCount <= 0) return;
+    try {
+      const flowStartedAt = Date.now();
+      setCapturing(true);
+      setMultiPageMode(true);
+      setMultiPageImages([]);
+      const capturedUris: string[] = [];
+      for (let index = 0; index < targetCount; index += 1) {
+        const captureQuality = getMultiPageCaptureQuality(index, captureQualityProfile);
+        const photo = await cameraRef.current.takePictureAsync({ quality: captureQuality });
+        if (!photo?.uri) {
+          throw new Error(`Camera returned empty URI at index ${index}`);
+        }
+        capturedUris.push(photo.uri);
+      }
+      setMultiPageImages(capturedUris);
+      void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
+      Alert.alert(
+        'Stress Capture Complete',
+        `Captured ${capturedUris.length}/${targetCount} photos automatically. Tap Finish to test PDF creation.`
+      );
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Alert.alert('Stress Capture Failed', errorMessage);
     } finally {
       setCapturing(false);
     }
@@ -404,6 +750,7 @@ export default function CaptureScreen() {
             await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             await setOcrExtractOnCapture(!ocrExtractActive);
           }}
+          onOpenOcrOptions={() => setOcrOptionsVisible(true)}
           ocrReadsRemaining={ocrReadsRemaining}
           isPro={isPro}
           multiPageMode={multiPageMode}
@@ -414,13 +761,32 @@ export default function CaptureScreen() {
               setPaywallVisible(true);
               return;
             }
-            setMultiPageMode((v) => {
-              const next = !v;
-              if (!next) setMultiPageImages([]);
-              return next;
-            });
+            if (multiPageMode) {
+              setMultiPageMode(false);
+              setMultiPageImages([]);
+              return;
+            }
+            if (!multiPageLimitDisclaimerDismissed) {
+              setMultiPageDontShowAgain(false);
+              setMultiPageDisclaimerVisible(true);
+              return;
+            }
+            setMultiPageMode(true);
           }}
           onFinishMultiPage={handleFinishMultiPage}
+          onAutoStressCapture={() => {
+            setStressTargetPickerVisible(true);
+          }}
+          captureQualityProfile={captureQualityProfile}
+          onChangeCaptureQualityProfile={async (profile) => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await setCaptureQualityProfile(profile);
+          }}
+          pdfPagePlacementMode={pdfPagePlacementMode}
+          onChangePdfPagePlacementMode={async (mode) => {
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            await setPdfPagePlacementMode(mode);
+          }}
         />
       ) : (
         <ImportTab
@@ -429,6 +795,7 @@ export default function CaptureScreen() {
             await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             await setOcrExtractOnCapture(!ocrExtractActive);
           }}
+          onOpenOcrOptions={() => setOcrOptionsVisible(true)}
           ocrReadsRemaining={ocrReadsRemaining}
           isPro={isPro}
           onImportImage={handleImportImage}
@@ -467,6 +834,181 @@ export default function CaptureScreen() {
           setPaywallVisible(false);
         }}
       />
+      <Modal visible={showLongOpOverlay} transparent animationType="fade">
+        <View style={styles.blockingOverlay}>
+          <View style={styles.blockingCard}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.blockingBody}>{longOpMessage}</Text>
+            {longOpPercent != null ? (
+              <Text style={styles.blockingPercent}>{longOpPercent}%</Text>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+      <Modal
+        visible={stressTargetPickerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setStressTargetPickerVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.stressPickerOverlay}
+          activeOpacity={1}
+          onPress={() => setStressTargetPickerVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.stressPickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.stressPickerTitle}>Auto Stress Test</Text>
+            <Text style={styles.stressPickerHint}>Choose target capture count</Text>
+            {[200, 300, 500, 1000].map((target) => (
+              <TouchableOpacity
+                key={target}
+                style={styles.stressPickerBtn}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setStressTargetPickerVisible(false);
+                  void handleAutoStressCapture(target);
+                }}
+              >
+                <Text style={styles.stressPickerBtnText}>{target}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setStressTargetPickerVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+      <Modal
+        visible={ocrOptionsVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOcrOptionsVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.stressPickerOverlay}
+          activeOpacity={1}
+          onPress={() => setOcrOptionsVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.stressPickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.stressPickerTitle}>OCR options</Text>
+            <Text style={styles.stressPickerHint}>Tune OCR behavior for clearer extraction.</Text>
+            <Text style={styles.ocrOptionLabel}>Mode</Text>
+            <View style={styles.profileRow}>
+              {(['auto', 'document', 'receipt', 'handwritten'] as const).map((mode) => {
+                const active = ocrProcessingMode === mode;
+                const label =
+                  mode === 'auto' ? 'Auto' : mode === 'document' ? 'Document' : mode === 'receipt' ? 'Receipt' : 'Handwritten';
+                return (
+                  <TouchableOpacity
+                    key={mode}
+                    style={[styles.profileChip, active && styles.profileChipActive]}
+                    onPress={async () => {
+                      await setOcrProcessingMode(mode as OcrProcessingMode);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <Text style={styles.ocrOptionLabel}>Language</Text>
+            <View style={styles.profileRow}>
+              {(['auto', 'en', 'tr'] as const).map((lang) => {
+                const active = ocrLanguage === lang;
+                const label = lang === 'auto' ? 'Auto' : lang.toUpperCase();
+                return (
+                  <TouchableOpacity
+                    key={lang}
+                    style={[styles.profileChip, active && styles.profileChipActive]}
+                    onPress={async () => {
+                      await setOcrLanguage(lang as OcrLanguage);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setOcrOptionsVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Done</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+      <Modal
+        visible={multiPageDisclaimerVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMultiPageDisclaimerVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.stressPickerOverlay}
+          activeOpacity={1}
+          onPress={() => setMultiPageDisclaimerVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.stressPickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.stressPickerTitle}>Multi-page PDF notice</Text>
+            <Text style={styles.stressPickerHint}>
+              Multi-page scan has been tested up to {MULTI_PAGE_TESTED_LIMIT} images. More than that may cause errors. For long books or
+              files, scan in sections.
+            </Text>
+            <TouchableOpacity
+              style={styles.disclaimerCheckRow}
+              activeOpacity={0.8}
+              onPress={() => setMultiPageDontShowAgain((v) => !v)}
+            >
+              <Ionicons
+                name={multiPageDontShowAgain ? 'checkbox-outline' : 'square-outline'}
+                size={20}
+                color={Colors.primary}
+              />
+              <Text style={styles.disclaimerCheckText}>Don't show this again</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.stressPickerBtn}
+              activeOpacity={0.8}
+              onPress={async () => {
+                if (multiPageDontShowAgain) {
+                  await setMultiPageLimitDisclaimerDismissed(true);
+                }
+                setMultiPageDisclaimerVisible(false);
+                setMultiPageMode(true);
+              }}
+            >
+              <Text style={styles.stressPickerBtnText}>Continue</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setMultiPageDisclaimerVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </>
   );
 }
@@ -483,12 +1025,18 @@ type CameraTabProps = {
   onToggleFlash: () => void;
   ocrExtractOnCapture: boolean;
   onToggleOcrExtract: () => void | Promise<void>;
+  onOpenOcrOptions: () => void;
   ocrReadsRemaining: number;
   isPro: boolean;
   multiPageMode: boolean;
   pageCount: number;
   onToggleMultiPage: () => void;
   onFinishMultiPage: () => void;
+  onAutoStressCapture: () => void;
+  captureQualityProfile: CaptureQualityProfile;
+  onChangeCaptureQualityProfile: (profile: CaptureQualityProfile) => void | Promise<void>;
+  pdfPagePlacementMode: PdfPagePlacementMode;
+  onChangePdfPagePlacementMode: (mode: PdfPagePlacementMode) => void | Promise<void>;
 };
 
 function CameraTab({
@@ -503,13 +1051,20 @@ function CameraTab({
   onToggleFlash,
   ocrExtractOnCapture,
   onToggleOcrExtract,
+  onOpenOcrOptions,
   ocrReadsRemaining,
   isPro,
   multiPageMode,
   pageCount,
   onToggleMultiPage,
   onFinishMultiPage,
+  onAutoStressCapture,
+  captureQualityProfile,
+  onChangeCaptureQualityProfile,
+  pdfPagePlacementMode,
+  onChangePdfPagePlacementMode,
 }: CameraTabProps) {
+  const [pdfOptionsVisible, setPdfOptionsVisible] = useState(false);
   if (!permission) {
     return (
       <View style={styles.centerContainer}>
@@ -528,6 +1083,14 @@ function CameraTab({
         </Text>
         <TouchableOpacity style={styles.permissionBtn} onPress={requestPermission} activeOpacity={0.8}>
           <Text style={styles.permissionBtnText}>Grant Permission</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.multiChip}
+          onPress={onOpenOcrOptions}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.multiChipText}>OCR options</Text>
         </TouchableOpacity>
       </View>
     );
@@ -582,12 +1145,33 @@ function CameraTab({
 
         {multiPageMode && (
           <TouchableOpacity
+            style={styles.multiChip}
+            onPress={() => setPdfOptionsVisible(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
+            <Text style={styles.multiChipText}>PDF options</Text>
+          </TouchableOpacity>
+        )}
+
+        {multiPageMode && (
+          <TouchableOpacity
             style={[styles.multiFinishBtn, pageCount === 0 && styles.multiFinishBtnDisabled]}
             onPress={onFinishMultiPage}
             disabled={pageCount === 0 || capturing}
             activeOpacity={0.8}
           >
             <Text style={styles.multiFinishText}>Finish</Text>
+          </TouchableOpacity>
+        )}
+        {__DEV__ && multiPageMode && (
+          <TouchableOpacity
+            style={styles.multiStressBtn}
+            onPress={onAutoStressCapture}
+            disabled={capturing}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.multiStressText}>Auto Stress</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -623,6 +1207,68 @@ function CameraTab({
         Position the document within the frame. Turn on &quot;Text from photo&quot; only when you want on-device text
         extraction (search in Settings is separate).
       </Text>
+
+      <Modal visible={pdfOptionsVisible} transparent animationType="fade" onRequestClose={() => setPdfOptionsVisible(false)}>
+        <TouchableOpacity style={styles.stressPickerOverlay} activeOpacity={1} onPress={() => setPdfOptionsVisible(false)}>
+          <TouchableOpacity style={styles.stressPickerCard} activeOpacity={1} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.stressPickerTitle}>Multi-page PDF options</Text>
+            <Text style={styles.stressPickerHint}>
+              These affect only multi-page export quality and page placement.
+            </Text>
+            <View style={styles.profileRow}>
+              {(['fast', 'balanced', 'max'] as const).map((profile) => {
+                const active = captureQualityProfile === profile;
+                const label = profile === 'fast' ? 'Fast' : profile === 'balanced' ? 'Balanced' : 'Max';
+                return (
+                  <TouchableOpacity
+                    key={profile}
+                    style={[styles.profileChip, active && styles.profileChipActive]}
+                    onPress={() => onChangeCaptureQualityProfile(profile)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <View style={styles.profileRow}>
+              {(['fill', 'fit'] as const).map((mode) => {
+                const active = pdfPagePlacementMode === mode;
+                return (
+                  <TouchableOpacity
+                    key={mode}
+                    style={[styles.profileChip, active && styles.profileChipActive]}
+                    onPress={() => onChangePdfPagePlacementMode(mode)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>
+                      {mode === 'fill' ? 'Fill page' : 'Fit page'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <Text style={styles.profileHint}>
+              {captureQualityProfile === 'fast'
+                ? 'Fast: smaller files, quickest export, lower detail.'
+                : captureQualityProfile === 'max'
+                  ? 'Max: best detail, larger files, slower export.'
+                  : 'Balanced: recommended quality/speed mix.'}
+              {'  '}
+              {pdfPagePlacementMode === 'fill'
+                ? 'Fill page: fewer side borders, may crop edges.'
+                : 'Fit page: no crop, may show thin side borders.'}
+            </Text>
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setPdfOptionsVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Done</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
@@ -630,6 +1276,7 @@ function CameraTab({
 type ImportTabProps = {
   ocrExtractOnCapture: boolean;
   onToggleOcrExtract: () => void | Promise<void>;
+  onOpenOcrOptions: () => void;
   ocrReadsRemaining: number;
   isPro: boolean;
   onImportImage: () => void;
@@ -642,6 +1289,7 @@ type ImportTabProps = {
 function ImportTab({
   ocrExtractOnCapture,
   onToggleOcrExtract,
+  onOpenOcrOptions,
   ocrReadsRemaining,
   isPro,
   onImportImage,
@@ -677,6 +1325,14 @@ function ImportTab({
               <Text style={styles.multiCountText}>{ocrReadsRemaining}</Text>
             </View>
           )}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.multiChip}
+          onPress={onOpenOcrOptions}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.multiChipText}>OCR options</Text>
         </TouchableOpacity>
       </View>
 
@@ -749,7 +1405,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
@@ -767,8 +1423,8 @@ const styles = StyleSheet.create({
   tabs: {
     flexDirection: 'row',
     paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-    gap: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    gap: Spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
@@ -776,8 +1432,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm + 2,
+    paddingVertical: Spacing.xs + 2,
     borderRadius: Radius.pill,
   },
   tabActive: {
@@ -849,8 +1505,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    paddingVertical: Spacing.xl,
-    paddingHorizontal: Spacing.xxl,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
     backgroundColor: Colors.background,
   },
   multiRow: {
@@ -858,10 +1514,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-start',
     flexWrap: 'wrap',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
     paddingHorizontal: Spacing.base,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.xs,
     backgroundColor: Colors.background,
   },
   multiChip: {
@@ -872,8 +1528,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surfaceRaised,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
+    paddingHorizontal: Spacing.sm + 2,
+    paddingVertical: 6,
   },
   multiChipActive: {
     borderColor: Colors.primary,
@@ -905,8 +1561,8 @@ const styles = StyleSheet.create({
   multiFinishBtn: {
     borderRadius: Radius.pill,
     backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xs + 6,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.xs + 2,
   },
   multiFinishBtnDisabled: {
     opacity: 0.5,
@@ -915,6 +1571,145 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightSemibold,
+  },
+  multiStressBtn: {
+    borderRadius: Radius.pill,
+    backgroundColor: '#1f2937',
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.xs + 2,
+  },
+  multiStressText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  profileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginLeft: 'auto',
+  },
+  profileChip: {
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  profileChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.14)',
+  },
+  profileChipText: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  profileChipTextActive: {
+    color: Colors.primary,
+  },
+  profileHint: {
+    width: '100%',
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  ocrOptionLabel: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+    marginTop: Spacing.xs,
+  },
+  blockingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  blockingCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.base,
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  blockingBody: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    textAlign: 'center',
+  },
+  blockingPercent: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  stressPickerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  stressPickerCard: {
+    width: '100%',
+    maxWidth: 320,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.base,
+    gap: Spacing.sm,
+  },
+  stressPickerTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
+    textAlign: 'center',
+  },
+  stressPickerHint: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    textAlign: 'center',
+    marginBottom: Spacing.xs,
+  },
+  stressPickerBtn: {
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  stressPickerBtnText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  stressPickerCancelBtn: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  stressPickerCancelText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  disclaimerCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginBottom: Spacing.xs,
+  },
+  disclaimerCheckText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
   },
   cameraControlBtn: {
     width: 48,
@@ -945,9 +1740,10 @@ const styles = StyleSheet.create({
   },
   cameraHint: {
     color: Colors.textMuted,
-    fontSize: Typography.fontSizeSm,
+    fontSize: Typography.fontSizeXs,
     textAlign: 'center',
-    paddingBottom: Spacing.base,
+    paddingBottom: Spacing.xs,
+    paddingTop: 2,
     backgroundColor: Colors.background,
   },
   importScroll: {

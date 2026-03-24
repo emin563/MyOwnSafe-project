@@ -45,7 +45,7 @@ const BENEFITS = [
   },
   {
     title: 'Text from photos:',
-    description: 'Read and copy text from receipts and labels—unlimited with Pro (5 free tries on Free).',
+    description: 'Read and copy text from receipts and labels—Free starts with 15 reads and gets +2 weekly; Pro is unlimited.',
   },
   {
     title: 'Advanced Sort & Filter:',

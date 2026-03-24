@@ -4,11 +4,26 @@ export const FREE_LIMITS = {
   tags: 10,
 } as const;
 
-/** Free (non‑Pro) photo text extractions (read + copy; vault search can match stored text). Not refunded when a document is deleted. */
-export const FREE_OCR_READ_TRIALS = 5;
+/** Free OCR base allowance at first launch. */
+export const FREE_OCR_BASE_READS = 15;
+/** Additional free OCR reads granted per full week after first launch. */
+export const FREE_OCR_WEEKLY_BONUS = 2;
+/** Kept for backwards compatibility in existing imports/copy. */
+export const FREE_OCR_READ_TRIALS = FREE_OCR_BASE_READS;
 
-export function getOcrReadTrialsRemaining(used: number): number {
-  return Math.max(0, FREE_OCR_READ_TRIALS - used);
+export function getFreeOcrReadAllowance(firstLaunchAt: number | null, nowMs: number = Date.now()): number {
+  if (!Number.isFinite(firstLaunchAt as number) || firstLaunchAt == null) {
+    return FREE_OCR_BASE_READS;
+  }
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const elapsed = Math.max(0, nowMs - firstLaunchAt);
+  const fullWeeks = Math.floor(elapsed / WEEK_MS);
+  return FREE_OCR_BASE_READS + fullWeeks * FREE_OCR_WEEKLY_BONUS;
+}
+
+export function getOcrReadTrialsRemaining(used: number, firstLaunchAt: number | null = null): number {
+  const allowance = getFreeOcrReadAllowance(firstLaunchAt);
+  return Math.max(0, allowance - used);
 }
 
 export type LimitKind = keyof typeof FREE_LIMITS;
@@ -39,7 +54,7 @@ export const FREE_TIER_RULES: readonly { title: string; detail: string }[] = [
   },
   {
     title: 'Text from photos (read & copy)',
-    detail: `Opt-in on Add → Camera or Import (“Text from photo”). On-device extraction; ${FREE_OCR_READ_TRIALS} free extractions on Free (lifetime) for new captures and imports. Duplicating a document reuses stored text without spending another read. Once text is stored, vault search can match it. Deleting a document does not refund a use. Pro removes this cap.`,
+    detail: `Opt-in on Add → Camera or Import (“Text from photo”). On-device extraction; Free starts with ${FREE_OCR_BASE_READS} reads and gets +${FREE_OCR_WEEKLY_BONUS} reads every week. Duplicating a document reuses stored text without spending another read. Once text is stored, vault search can match it. Pro removes this cap.`,
   },
 ];
 
@@ -48,7 +63,7 @@ export const FREE_TIER_ONE_LINERS: readonly string[] = [
   `Up to ${FREE_LIMITS.documents} files in your vault`,
   `Up to ${FREE_LIMITS.categories} folders you create (${SEEDED_DEFAULT_CATEGORIES} starter folders don’t count)`,
   `Up to ${FREE_LIMITS.tags} different tags`,
-  `${FREE_OCR_READ_TRIALS} free “Text from photo” extractions when enabled (lifetime; not refunded if you delete the file); vault search matches extracted text`,
+  `${FREE_OCR_BASE_READS} free “Text from photo” reads to start, plus +${FREE_OCR_WEEKLY_BONUS} each week; vault search matches extracted text`,
 ];
 
 /** Features that are Pro-only (not numeric limits). */

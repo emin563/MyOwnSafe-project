@@ -11,6 +11,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,7 +31,7 @@ import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
 import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { FREE_OCR_READ_TRIALS, getOcrReadTrialsRemaining } from '@/services/limits';
+import { getOcrReadTrialsRemaining } from '@/services/limits';
 import type { Category, FileType, Tag } from '@/db/types';
 
 export default function DocumentEditorScreen() {
@@ -57,6 +58,7 @@ export default function DocumentEditorScreen() {
     ocrExtractOnCapture,
     isPro,
     ocrReadTrialsUsed,
+    firstLaunchAt,
     pendingOcrText,
     clearPendingOcrText,
   } = useAppStore();
@@ -86,9 +88,14 @@ export default function DocumentEditorScreen() {
   const [limitVisible, setLimitVisible] = useState(false);
   const [pendingNewTagName, setPendingNewTagName] = useState<string | null>(null);
   const [ocrPaywallVisible, setOcrPaywallVisible] = useState(false);
+  const [busyText, setBusyText] = useState<string | null>(null);
+  const [showBusyOverlay, setShowBusyOverlay] = useState(false);
+  const [ocrCurrentPageIdx, setOcrCurrentPageIdx] = useState(0);
+  const [ocrZoom, setOcrZoom] = useState(1);
+  const [ocrSearchQuery, setOcrSearchQuery] = useState('');
 
-  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed);
-  const ocrQuotaBlocked = !isPro && ocrReadTrialsUsed >= FREE_OCR_READ_TRIALS;
+  const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed, firstLaunchAt);
+  const ocrQuotaBlocked = !isPro && ocrReadsRemaining <= 0;
 
   const ocrPages = useMemo(() => {
     const raw = ocrText?.trim();
@@ -124,13 +131,28 @@ export default function DocumentEditorScreen() {
     return pages.length ? pages : [{ pageNumber: 1, content: raw }];
   }, [ocrText]);
 
-  const [ocrShowAll, setOcrShowAll] = useState(false);
+  const getOcrPageQuality = (content: string): 'good' | 'weak' => {
+    const text = content.trim();
+    if (text.length < 40) return 'weak';
+    const letterCount = (text.match(/[A-Za-z\u00C0-\u024F\u0100-\u017F\u0180-\u024F]/g) ?? []).length;
+    const ratio = letterCount / Math.max(1, text.length);
+    return ratio < 0.35 ? 'weak' : 'good';
+  };
 
   useEffect(() => {
-    setOcrShowAll(false);
-  }, [ocrText]);
+    if (!busyText) {
+      setShowBusyOverlay(false);
+      return;
+    }
+    const timeoutId = setTimeout(() => setShowBusyOverlay(true), 1000);
+    return () => clearTimeout(timeoutId);
+  }, [busyText]);
 
-  const visibleOcrPages = ocrShowAll ? ocrPages : ocrPages.slice(0, 1);
+  useEffect(() => {
+    setOcrCurrentPageIdx(0);
+    setOcrZoom(1);
+    setOcrSearchQuery('');
+  }, [ocrText]);
 
   const loadDocument = useCallback(async () => {
     const doc = await getDocumentById(Number(id));
@@ -203,6 +225,13 @@ export default function DocumentEditorScreen() {
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
+    const getDelayMs = (attempt: number): number => {
+      // Adaptive backoff: quick first checks, then relax to reduce DB/battery load.
+      if (attempt <= 2) return 1000;
+      if (attempt <= 6) return 2000;
+      return 3000;
+    };
+
     const poll = async () => {
       if (cancelled) return;
       attempts += 1;
@@ -222,11 +251,11 @@ export default function DocumentEditorScreen() {
         return;
       }
 
-      timeoutId = setTimeout(poll, 2000);
+      timeoutId = setTimeout(poll, getDelayMs(attempts));
     };
 
-    // Keep the existing UX timing (first attempt after ~2s).
-    timeoutId = setTimeout(poll, 2000);
+    // First check quickly so users see OCR result sooner when extraction is fast.
+    timeoutId = setTimeout(poll, 1000);
 
     return () => {
       cancelled = true;
@@ -244,6 +273,49 @@ export default function DocumentEditorScreen() {
       showToast('Could not copy', 'danger');
     }
   };
+
+  const handleCopyOcrPage = async (content: string) => {
+    const text = content.trim();
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(text);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      showToast('Page copied to clipboard', 'success');
+    } catch {
+      showToast('Could not copy page', 'danger');
+    }
+  };
+
+  const ocrMatchPageIndexes = useMemo(() => {
+    const q = ocrSearchQuery.trim().toLocaleLowerCase();
+    if (!q) return [];
+    const matches: number[] = [];
+    for (let i = 0; i < ocrPages.length; i += 1) {
+      if (ocrPages[i]?.content?.toLocaleLowerCase().includes(q)) {
+        matches.push(i);
+      }
+    }
+    return matches;
+  }, [ocrSearchQuery, ocrPages]);
+
+  const ocrCurrentPageHasMatch = useMemo(() => {
+    if (!ocrSearchQuery.trim()) return false;
+    return ocrMatchPageIndexes.includes(ocrCurrentPageIdx);
+  }, [ocrSearchQuery, ocrMatchPageIndexes, ocrCurrentPageIdx]);
+
+  const jumpToNearestMatch = useCallback(
+    (direction: 'next' | 'prev') => {
+      if (ocrMatchPageIndexes.length === 0) return;
+      if (direction === 'next') {
+        const next = ocrMatchPageIndexes.find((i) => i > ocrCurrentPageIdx);
+        setOcrCurrentPageIdx(next ?? ocrMatchPageIndexes[0]);
+        return;
+      }
+      const prev = [...ocrMatchPageIndexes].reverse().find((i) => i < ocrCurrentPageIdx);
+      setOcrCurrentPageIdx(prev ?? ocrMatchPageIndexes[ocrMatchPageIndexes.length - 1]);
+    },
+    [ocrCurrentPageIdx, ocrMatchPageIndexes]
+  );
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -268,6 +340,7 @@ export default function DocumentEditorScreen() {
     }
 
     setSaving(true);
+    setBusyText('Saving document...');
     try {
       if (isNew) {
         const preOcrText =
@@ -300,6 +373,7 @@ export default function DocumentEditorScreen() {
       router.back();
     } finally {
       setSaving(false);
+      setBusyText(null);
     }
   };
 
@@ -352,6 +426,7 @@ export default function DocumentEditorScreen() {
   const handleDuplicate = async () => {
     if (isNew || duplicating) return;
     setDuplicating(true);
+    setBusyText('Duplicating document...');
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const newId = await duplicateDocument(Number(id));
@@ -362,11 +437,13 @@ export default function DocumentEditorScreen() {
       Alert.alert('Error', 'Could not duplicate the document.');
     } finally {
       setDuplicating(false);
+      setBusyText(null);
     }
   };
 
   const handleExportPdf = async () => {
     if (!fileUri || isNew) return;
+    setBusyText('Exporting PDF...');
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const doc = await getDocumentById(Number(id));
@@ -375,6 +452,8 @@ export default function DocumentEditorScreen() {
       await exportDocumentAsPdf(doc, categoryName);
     } catch {
       Alert.alert('Export Failed', 'Could not generate the PDF. Please try again.');
+    } finally {
+      setBusyText(null);
     }
   };
 
@@ -645,18 +724,6 @@ export default function DocumentEditorScreen() {
               <View style={styles.ocrSection}>
                 <View style={styles.ocrHeaderRow}>
                   <Text style={styles.ocrSectionTitle}>Text from photo</Text>
-                  {ocrText != null && ocrText.trim().length > 0 && (
-                    <TouchableOpacity
-                      onPress={handleCopyOcr}
-                      style={styles.ocrCopyBtn}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      accessibilityRole="button"
-                      accessibilityLabel="Copy text from photo"
-                    >
-                      <Ionicons name="copy-outline" size={18} color={Colors.primary} />
-                      <Text style={styles.ocrCopyBtnText}>Copy</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
                 <Text style={styles.ocrHint}>
                   {isPro
@@ -668,7 +735,7 @@ export default function DocumentEditorScreen() {
                     {isPro
                       ? 'After you save, text can appear here if “Text from photo” is on (Add → Camera or Import).'
                       : ocrReadsRemaining === 0
-                        ? 'After you save, text from new photos won’t be extracted—you’ve used your 5 free photo reads. Upgrade to Pro for unlimited.'
+                        ? 'After you save, text from new photos won’t be extracted—you’re out of free OCR reads for now. Free adds +2 reads weekly, or upgrade to Pro for unlimited.'
                         : `Turn on “Text from photo” on Add → Camera or Import before capturing to read and copy text (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left).`}
                   </Text>
                 )}
@@ -684,8 +751,8 @@ export default function DocumentEditorScreen() {
                 {!isNew && ocrExtractOnCapture && ocrQuotaBlocked && (ocrText == null || !ocrText.trim()) && !ocrAwaiting && (
                   <View>
                     <Text style={styles.ocrPlaceholder}>
-                      You’ve used all 5 free photo text reads. Upgrade to Pro to read and copy text from new photos as
-                      many times as you need.
+                      You’re out of free photo text reads right now. Free adds +2 reads weekly, or upgrade to Pro for
+                      unlimited reads.
                     </Text>
                     <TouchableOpacity
                       style={styles.ocrUpgradeBtn}
@@ -710,30 +777,214 @@ export default function DocumentEditorScreen() {
                   )}
                 {ocrText != null && ocrText.trim().length > 0 && (
                   <>
-                    {visibleOcrPages.map((page) => (
-                      <View key={page.pageNumber} style={styles.ocrPageCard}>
-                        <Text style={styles.ocrPageTitle}>Page {page.pageNumber}</Text>
-                        <Text style={styles.ocrPageBody} selectable>
-                          {page.content}
-                        </Text>
-                      </View>
-                    ))}
-
                     {ocrPages.length > 1 && (
-                      <TouchableOpacity
-                        style={styles.ocrToggleRow}
-                        onPress={() => setOcrShowAll((v) => !v)}
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel={ocrShowAll ? 'Show less OCR text' : 'Show more OCR text'}
-                      >
-                        <Ionicons
-                          name={ocrShowAll ? 'chevron-up' : 'chevron-down'}
-                          size={16}
-                          color={Colors.textSecondary}
+                      <View style={styles.ocrToolbar}>
+                        <TouchableOpacity
+                          style={styles.ocrCopyAllBtn}
+                          onPress={handleCopyOcr}
+                          activeOpacity={0.7}
+                          accessibilityRole="button"
+                          accessibilityLabel="Copy all OCR pages"
+                        >
+                          <Ionicons name="copy-outline" size={16} color={Colors.primary} />
+                          <Text style={styles.ocrCopyAllBtnText}>Copy all pages</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.ocrToolBtn}
+                          onPress={() => setOcrZoom((z) => Math.max(0.85, Number((z - 0.1).toFixed(2))))}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="remove-outline" size={14} color={Colors.text} />
+                          <Text style={styles.ocrToolBtnText}>A-</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.ocrToolBtn}
+                          onPress={() => setOcrZoom((z) => Math.min(1.7, Number((z + 0.1).toFixed(2))))}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="add-outline" size={14} color={Colors.text} />
+                          <Text style={styles.ocrToolBtnText}>A+</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    <View style={styles.ocrSearchRow}>
+                      <View style={styles.ocrSearchInputWrap}>
+                        <Ionicons name="search-outline" size={14} color={Colors.textMuted} />
+                        <TextInput
+                          value={ocrSearchQuery}
+                          onChangeText={setOcrSearchQuery}
+                          placeholder="Search in OCR text..."
+                          placeholderTextColor={Colors.textMuted}
+                          selectionColor={Colors.primary}
+                          style={styles.ocrSearchInput}
                         />
-                        <Text style={styles.ocrToggleText}>{ocrShowAll ? 'Show less' : 'Show more'}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[styles.ocrToolBtn, !ocrSearchQuery.trim() && styles.ocrBookNavBtnDisabled]}
+                        onPress={() => jumpToNearestMatch('prev')}
+                        disabled={!ocrSearchQuery.trim()}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-back" size={14} color={Colors.text} />
+                        <Text style={styles.ocrToolBtnText}>Prev</Text>
                       </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.ocrToolBtn, !ocrSearchQuery.trim() && styles.ocrBookNavBtnDisabled]}
+                        onPress={() => jumpToNearestMatch('next')}
+                        disabled={!ocrSearchQuery.trim()}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.ocrToolBtnText}>Next</Text>
+                        <Ionicons name="chevron-forward" size={14} color={Colors.text} />
+                      </TouchableOpacity>
+                    </View>
+                    {ocrSearchQuery.trim().length > 0 && (
+                      <Text style={styles.ocrSearchHint}>
+                        {ocrMatchPageIndexes.length === 0
+                          ? 'No matches found in OCR pages.'
+                          : ocrCurrentPageHasMatch
+                            ? `Match found on this page (${ocrMatchPageIndexes.length} page${ocrMatchPageIndexes.length === 1 ? '' : 's'} total).`
+                            : `This page has no match. ${ocrMatchPageIndexes.length} matching page${ocrMatchPageIndexes.length === 1 ? '' : 's'} total.`}
+                      </Text>
+                    )}
+
+                    {ocrPages.length > 1 ? (
+                      <View style={styles.ocrBookWrap}>
+                        <View style={styles.ocrBookNavRow}>
+                          <TouchableOpacity
+                            style={[styles.ocrBookNavBtn, ocrCurrentPageIdx === 0 && styles.ocrBookNavBtnDisabled]}
+                            onPress={() => setOcrCurrentPageIdx((p) => Math.max(0, p - 1))}
+                            disabled={ocrCurrentPageIdx === 0}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="chevron-back" size={16} color={Colors.text} />
+                            <Text style={styles.ocrBookNavText}>Prev</Text>
+                          </TouchableOpacity>
+                          <Text style={styles.ocrBookCounter}>
+                            {Math.min(ocrCurrentPageIdx + 1, ocrPages.length)} / {ocrPages.length}
+                          </Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.ocrBookNavBtn,
+                              ocrCurrentPageIdx >= ocrPages.length - 1 && styles.ocrBookNavBtnDisabled,
+                            ]}
+                            onPress={() => setOcrCurrentPageIdx((p) => Math.min(ocrPages.length - 1, p + 1))}
+                            disabled={ocrCurrentPageIdx >= ocrPages.length - 1}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={styles.ocrBookNavText}>Next</Text>
+                            <Ionicons name="chevron-forward" size={16} color={Colors.text} />
+                          </TouchableOpacity>
+                        </View>
+                        <View
+                          style={[
+                            styles.ocrPageCard,
+                            { minHeight: 280 },
+                            ocrCurrentPageHasMatch && styles.ocrPageCardMatch,
+                          ]}
+                        >
+                          <View style={styles.ocrPageHeader}>
+                            <Text style={styles.ocrPageTitle}>Page {ocrPages[ocrCurrentPageIdx]?.pageNumber ?? 1}</Text>
+                            <View style={styles.ocrPageHeaderRight}>
+                              <View
+                                style={[
+                                  styles.ocrQualityBadge,
+                                  getOcrPageQuality(ocrPages[ocrCurrentPageIdx]?.content ?? '') === 'good'
+                                    ? styles.ocrQualityBadgeGood
+                                    : styles.ocrQualityBadgeWeak,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.ocrQualityBadgeText,
+                                    getOcrPageQuality(ocrPages[ocrCurrentPageIdx]?.content ?? '') === 'good'
+                                      ? styles.ocrQualityBadgeTextGood
+                                      : styles.ocrQualityBadgeTextWeak,
+                                  ]}
+                                >
+                                  {getOcrPageQuality(ocrPages[ocrCurrentPageIdx]?.content ?? '') === 'good' ? 'Good' : 'Weak'}
+                                </Text>
+                              </View>
+                            <TouchableOpacity
+                              style={styles.ocrPageCopyBtn}
+                              onPress={() => handleCopyOcrPage(ocrPages[ocrCurrentPageIdx]?.content ?? '')}
+                              activeOpacity={0.7}
+                              accessibilityRole="button"
+                              accessibilityLabel="Copy current OCR page"
+                            >
+                              <Ionicons name="copy-outline" size={16} color={Colors.primary} />
+                              <Text style={styles.ocrPageCopyBtnText}>Copy</Text>
+                            </TouchableOpacity>
+                            </View>
+                          </View>
+                          <ScrollView style={styles.ocrPageScroll} contentContainerStyle={styles.ocrPageScrollContent}>
+                            <Text
+                              style={[
+                                styles.ocrPageBody,
+                                {
+                                  fontSize: Math.round(Typography.fontSizeBase * ocrZoom),
+                                  lineHeight: Math.round((Typography.lineHeightBase + 2) * ocrZoom),
+                                },
+                              ]}
+                              selectable
+                            >
+                              {ocrPages[ocrCurrentPageIdx]?.content ?? ''}
+                            </Text>
+                          </ScrollView>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.ocrPageCard}>
+                        <View style={styles.ocrPageHeader}>
+                          <Text style={styles.ocrPageTitle}>Page {ocrPages[0]?.pageNumber ?? 1}</Text>
+                          <View style={styles.ocrPageHeaderRight}>
+                            <View
+                              style={[
+                                styles.ocrQualityBadge,
+                                getOcrPageQuality(ocrPages[0]?.content ?? '') === 'good'
+                                  ? styles.ocrQualityBadgeGood
+                                  : styles.ocrQualityBadgeWeak,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.ocrQualityBadgeText,
+                                  getOcrPageQuality(ocrPages[0]?.content ?? '') === 'good'
+                                    ? styles.ocrQualityBadgeTextGood
+                                    : styles.ocrQualityBadgeTextWeak,
+                                ]}
+                              >
+                                {getOcrPageQuality(ocrPages[0]?.content ?? '') === 'good' ? 'Good' : 'Weak'}
+                              </Text>
+                            </View>
+                          <TouchableOpacity
+                            style={styles.ocrPageCopyBtn}
+                            onPress={() => handleCopyOcrPage(ocrPages[0]?.content ?? '')}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                            accessibilityLabel="Copy OCR page"
+                          >
+                            <Ionicons name="copy-outline" size={16} color={Colors.primary} />
+                            <Text style={styles.ocrPageCopyBtnText}>Copy</Text>
+                          </TouchableOpacity>
+                          </View>
+                        </View>
+                        <ScrollView style={styles.ocrPageScroll} contentContainerStyle={styles.ocrPageScrollContent}>
+                          <Text
+                            style={[
+                              styles.ocrPageBody,
+                              {
+                                fontSize: Math.round(Typography.fontSizeBase * ocrZoom),
+                                lineHeight: Math.round((Typography.lineHeightBase + 2) * ocrZoom),
+                              },
+                            ]}
+                            selectable
+                          >
+                            {ocrPages[0]?.content ?? ''}
+                          </Text>
+                        </ScrollView>
+                      </View>
                     )}
                   </>
                 )}
@@ -932,6 +1183,14 @@ export default function DocumentEditorScreen() {
           setOcrPaywallVisible(false);
         }}
       />
+      <Modal visible={showBusyOverlay} transparent animationType="fade">
+        <View style={styles.busyOverlay}>
+          <View style={styles.busyCard}>
+            <ActivityIndicator size="large" color={Colors.primary} />
+            <Text style={styles.busyBody}>Loading, this may take a few minutes</Text>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1164,34 +1423,185 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightSemibold,
   },
+  ocrToolbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+  },
   ocrPageCard: {
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surfaceRaised,
     borderRadius: Radius.md,
-    padding: Spacing.sm,
+    padding: Spacing.base,
+    marginBottom: Spacing.xs,
+  },
+  ocrPageCardMatch: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.08)',
+  },
+  ocrPageHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xs,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  ocrPageHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
   },
   ocrPageTitle: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeXs,
     fontWeight: Typography.fontWeightSemibold,
-    marginBottom: Spacing.xs,
+  },
+  ocrPageCounter: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
   },
   ocrPageBody: {
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
-    lineHeight: Typography.lineHeightBase,
+    lineHeight: Typography.lineHeightBase + 2,
   },
-  ocrToggleRow: {
+  ocrPageScroll: {
+    flex: 1,
+  },
+  ocrPageScrollContent: {
+    paddingBottom: Spacing.sm,
+  },
+  ocrSearchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    paddingVertical: 6,
+    marginTop: 2,
   },
-  ocrToggleText: {
+  ocrSearchInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.sm,
+    minHeight: 34,
+  },
+  ocrSearchInput: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    paddingVertical: 0,
+  },
+  ocrSearchHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+  },
+  ocrCopyAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+  },
+  ocrCopyAllBtnText: {
     color: Colors.primary,
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrToolBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  ocrToolBtnText: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrBookWrap: {
+    gap: Spacing.xs,
+  },
+  ocrBookNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  ocrBookNavBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+  },
+  ocrBookNavBtnDisabled: {
+    opacity: 0.4,
+  },
+  ocrBookNavText: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  ocrBookCounter: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrPageCopyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  ocrPageCopyBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrQualityBadge: {
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    borderWidth: 1,
+  },
+  ocrQualityBadgeGood: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+  },
+  ocrQualityBadgeWeak: {
+    borderColor: Colors.danger,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  ocrQualityBadgeText: {
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrQualityBadgeTextGood: {
+    color: Colors.primary,
+  },
+  ocrQualityBadgeTextWeak: {
+    color: Colors.danger,
   },
   ocrHint: {
     color: Colors.textMuted,
@@ -1332,6 +1742,30 @@ const styles = StyleSheet.create({
   fullPreviewImage: {
     width: '100%',
     height: '80%',
+  },
+  busyOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  busyCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: Radius.lg,
+    backgroundColor: Colors.surfaceRaised,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.base,
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  busyBody: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    textAlign: 'center',
   },
 });
 
