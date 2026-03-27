@@ -16,7 +16,6 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
-import * as LegacyFS from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -33,6 +32,10 @@ import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
 import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 import { recordPerformanceMetric } from '@/services/performanceMetrics';
 import { recordOcrPageMetric } from '@/services/ocrMetrics';
+import {
+  isAndroidMlKitScannerPlatform,
+  launchVaultMlKitScan,
+} from '@/services/mlKitDocumentScan';
 
 const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
 const PDF_BUILD_TIMEOUT_MS = 6 * 60 * 1000;
@@ -201,19 +204,79 @@ export default function CaptureScreen() {
   };
 
   const handleCapture = async () => {
-    if (!cameraRef.current || capturing) {
+    if (capturing) return;
+
+    const useMlKit = isAndroidMlKitScannerPlatform();
+    if (!useMlKit && !cameraRef.current) {
       return;
     }
+
     setPendingAfterUpgradeAction('capture');
-    if (!(await checkSlotLimit())) {
-      return;
+    if (!multiPageMode) {
+      if (!(await checkSlotLimit())) {
+        return;
+      }
+    } else {
+      const { isPro } = useAppStore.getState();
+      if (!isPro) {
+        const totalFiles = await getTotalFileCount();
+        if (totalFiles >= FREE_DOCUMENT_LIMIT) {
+          setLimitKind('documents');
+          setLimitVisible(true);
+          return;
+        }
+      }
     }
     setPendingAfterUpgradeAction(null);
+
+    if (useMlKit) {
+      const flowStartedAt = Date.now();
+      setCapturing(true);
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        const scan = await launchVaultMlKitScan(multiPageMode);
+        if (!scan.ok) {
+          if (!scan.canceled && scan.message) {
+            Alert.alert('Document scan', scan.message);
+          }
+          return;
+        }
+        const { isPro } = useAppStore.getState();
+        if (multiPageMode && !isPro) {
+          const totalFiles = await getTotalFileCount();
+          const slotsLeft = Math.max(0, FREE_DOCUMENT_LIMIT - totalFiles);
+          if (scan.pageUris.length > slotsLeft) {
+            Alert.alert(
+              'Free plan limit',
+              `You can add ${slotsLeft} more document slot(s), but this scan has ${scan.pageUris.length} page(s). Remove pages in the scanner or upgrade to Pro.`
+            );
+            return;
+          }
+        }
+        const permanentUris: string[] = [];
+        for (const uri of scan.pageUris) {
+          permanentUris.push(await saveFileToArchive(uri));
+        }
+        if (multiPageMode) {
+          setMultiPageImages((prev) => [...prev, ...permanentUris]);
+          return;
+        }
+        void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
+        const permanentUri = permanentUris[0];
+        router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
+      } catch {
+        Alert.alert('Capture Failed', 'Could not complete the document scan. Please try again.');
+      } finally {
+        setCapturing(false);
+      }
+      return;
+    }
+
+    if (!cameraRef.current) return;
     const flowStartedAt = Date.now();
     setCapturing(true);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      // Reduce multi-page image payload to avoid OOM in expo-print when many pages are merged.
       const captureQuality = multiPageMode
         ? getMultiPageCaptureQuality(multiPageImages.length, captureQualityProfile)
         : 0.9;
@@ -984,7 +1047,7 @@ export default function CaptureScreen() {
                 size={20}
                 color={Colors.primary}
               />
-              <Text style={styles.disclaimerCheckText}>Don't show this again</Text>
+              <Text style={styles.disclaimerCheckText}>Do not show this again</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.stressPickerBtn}
@@ -1105,9 +1168,7 @@ function CameraTab({
           facing={facing}
           flash={flash}
         />
-        <View pointerEvents="none" style={styles.cameraOverlay}>
-          <View style={styles.scanFrame} />
-        </View>
+        <View pointerEvents="none" style={styles.cameraOverlay} />
       </View>
 
       <View style={styles.multiRow}>
@@ -1163,6 +1224,11 @@ function CameraTab({
           >
             <Text style={styles.multiFinishText}>Finish</Text>
           </TouchableOpacity>
+        )}
+        {isAndroidMlKitScannerPlatform() && (
+          <Text style={styles.mlKitHint}>
+            Shutter opens the Google document scanner (auto crop, filters, multi-page).
+          </Text>
         )}
         {__DEV__ && multiPageMode && (
           <TouchableOpacity
@@ -1542,6 +1608,15 @@ const styles = StyleSheet.create({
   },
   multiChipTextActive: {
     color: Colors.primary,
+  },
+  mlKitHint: {
+    width: '100%',
+    paddingHorizontal: Spacing.sm,
+    marginTop: Spacing.xs,
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 16,
+    textAlign: 'center',
   },
   multiCount: {
     marginLeft: Spacing.xs,

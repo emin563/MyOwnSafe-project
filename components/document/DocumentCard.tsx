@@ -16,7 +16,6 @@ import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { ConfirmModal, ProFeatureDialog, UseAiWorkflowSheet } from '@/components/ui';
-import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import type { Document } from '@/db/types';
 import type { Tag } from '@/db/types';
@@ -53,7 +52,6 @@ export function DocumentCard({
   const isExpired = checkExpired(document.expiry_date);
 
   const handleShare = async () => {
-    const endTrace = beginShareTrace('DocumentCard.handleShare', 'H1');
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
@@ -61,8 +59,6 @@ export function DocumentCard({
       await Sharing.shareAsync(document.file_uri);
     } catch {
       // Ignore sharing errors
-    } finally {
-      endTrace();
     }
   };
 

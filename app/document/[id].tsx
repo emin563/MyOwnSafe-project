@@ -29,7 +29,6 @@ import { exportDocumentAsPdf } from '@/services/PdfService';
 import { UseAiWorkflowSheet } from '@/components/ui';
 import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
-import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import { getOcrReadTrialsRemaining } from '@/services/limits';
 import type { Category, FileType, Tag } from '@/db/types';
@@ -379,7 +378,6 @@ export default function DocumentEditorScreen() {
 
   const handleShare = async () => {
     if (!fileUri) return;
-    const endTrace = beginShareTrace('DocumentEditor.handleShare', 'H1');
     try {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
@@ -387,8 +385,6 @@ export default function DocumentEditorScreen() {
       await Sharing.shareAsync(fileUri);
     } catch {
       // ignore
-    } finally {
-      endTrace();
     }
   };
 

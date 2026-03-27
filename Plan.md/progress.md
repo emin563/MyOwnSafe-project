@@ -115,17 +115,32 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 
 ---
 
-## 6. Current state (summary)
+## 6. Native document scan + Google Drive backup
 
-- **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
-- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, intro pricing + paywall/quiz UX, privacy screen, toasts.
-- **Notes:** OCR requires a dev build / native module to run; in Expo Go it will auto-disable and fall back to title/notes/tag search. PDF viewer is implemented as an in-app baseline viewer (Android-first).
-- **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
-- **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, and deeper AI-optional export UX.
+**Status:** Implemented (Android).
+
+| Task | Status |
+|------|--------|
+| ML Kit Document Scanner via `@infinitered/react-native-mlkit-document-scanner`; probe with `requireOptionalNativeModule('RNMLKitDocumentScanner')` (safe render path); fallback to expo-camera when native missing | ✅ Done |
+| Capture: Android shutter uses ML Kit when linked; multi-page scan limits + free-tier slot checks preserved | ✅ Done |
+| `GoogleDriveSync`: token storage (Secure Store + SQLite fallback), Vault folder create/list, zip upload to Drive, `maybeUploadVaultBackupToGoogleDrive` from `createBackup` | ✅ Done |
+| Settings: `GoogleDriveBackupSection` + lazy `GoogleDriveOAuthPanel` (OAuth only when `extra.googleDriveOAuth` configured); Connect / disconnect / auto-upload toggle (`googleDriveAutoUpload`) | ✅ Done |
+| Avoid `expo-auth-session` package root import in `GoogleDriveSync` (use `build/TokenRequest` + minimal token discovery) | ✅ Done |
+| `app.json` `extra.googleDriveOAuth` placeholders; `expo-secure-store` plugin (not `expo-crypto` as a plugin) | ✅ Done |
 
 ---
 
-## 7. AI Optional Workflow Upgrade (“Use AI when you want”)
+## 7. Current state (summary)
+
+- **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
+- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts.
+- **Notes:** OCR (`expo-text-extractor` / dev build) may be unavailable in Expo Go; search still uses title/notes/tags and stored `ocr_text` when present. ML Kit requires a **native rebuild** with the Infinitered module linked; otherwise capture uses expo-camera only. Google Drive Connect requires valid OAuth client IDs in `app.json` extra and a build that includes **expo-crypto** (dependency of `expo-auth-session`; autolinks — do not declare as a config plugin).
+- **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
+- **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, deeper AI-optional export UX, iOS parity (not a current target).
+
+---
+
+## 8. AI Optional Workflow Upgrade (“Use AI when you want”)
 
 **Plan:** `.cursor/plans/ai_workflow_upgrade_798680b0.plan.md`  
 **Status:** Implemented.

@@ -1,6 +1,5 @@
 import { Platform, Linking } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { beginShareTrace } from '@/services/shareTrace';
 import type { FileType } from '@/db/types';
 
 /**
@@ -44,15 +43,10 @@ function isExpoGo(): boolean {
 async function openWithSharingFallback(uri: string, mime: string): Promise<void> {
   const Sharing = await import('expo-sharing');
   if (await Sharing.isAvailableAsync()) {
-    const endTrace = beginShareTrace('openWithExternal.openWithSharingFallback', 'H2');
-    try {
-      await Sharing.shareAsync(uri, {
-        dialogTitle: 'Open with…',
-        mimeType: mime,
-      });
-    } finally {
-      endTrace();
-    }
+    await Sharing.shareAsync(uri, {
+      dialogTitle: 'Open with…',
+      mimeType: mime,
+    });
     return;
   }
   await Linking.openURL(uri);

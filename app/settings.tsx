@@ -1,3 +1,4 @@
+import { GoogleDriveBackupSection } from '@/components/settings/GoogleDriveBackupSection';
 import { PaywallModal, QuizWhyPro } from '@/components/ui';
 import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
@@ -20,6 +21,7 @@ import {
   type OcrQaChecklist,
   type OcrQaCaseId,
 } from '@/services/ocrQaChecklist';
+import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,7 +29,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -77,6 +79,24 @@ export default function SettingsScreen() {
   const [regressionRows, setRegressionRows] = useState<RegressionChecklist | null>(null);
   const [regressionMessage, setRegressionMessage] = useState<string | null>(null);
   const [regressionReportActionAt, setRegressionReportActionAt] = useState<string | null>(null);
+  const [developerToolsVisible, setDeveloperToolsVisible] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const raw = await getSetting('developerToolsVisible');
+      if (!cancelled) setDeveloperToolsVisible(raw === '1');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleDeveloperToolsToggle = async (value: boolean) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setDeveloperToolsVisible(value);
+    await setSetting('developerToolsVisible', value ? '1' : '0');
+  };
 
   // ── Biometric toggle ────────────────────────────────────────────────────
 
@@ -525,13 +545,38 @@ export default function SettingsScreen() {
               <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
             )}
           </TouchableOpacity>
+
+          <GoogleDriveBackupSection />
         </View>
 
-        {/* About: Why Pro (quiz) + MyOwnSafe Pro (paywall) */}
-        <Text style={styles.sectionTitle}>About</Text>
-        <View style={styles.card}>
-          {__DEV__ && (
-            <>
+        {__DEV__ && (
+          <>
+            <Text style={styles.sectionTitle}>Developer</Text>
+            <View style={styles.card}>
+              <View style={styles.row}>
+                <View style={styles.rowIcon}>
+                  <Ionicons name="construct-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Show developer tools</Text>
+                  <Text style={styles.rowHint}>
+                    Metrics, OCR QA, regression checklists, and Pro testing switches
+                  </Text>
+                </View>
+                <Switch
+                  value={developerToolsVisible}
+                  onValueChange={handleDeveloperToolsToggle}
+                  trackColor={{ false: Colors.border, true: Colors.primary }}
+                  thumbColor={Colors.white}
+                  ios_backgroundColor={Colors.border}
+                />
+              </View>
+            </View>
+
+            {developerToolsVisible && (
+              <>
+                <Text style={styles.sectionTitle}>Developer tools</Text>
+                <View style={styles.card}>
               <View style={styles.row}>
                 <View style={styles.rowIcon}>
                   <Ionicons name="code-slash-outline" size={20} color={Colors.primary} />
@@ -920,9 +965,15 @@ export default function SettingsScreen() {
                   <Text style={styles.metricsMessageText}>{regressionReportActionAt}</Text>
                 </View>
               ) : null}
-              <View style={styles.divider} />
-            </>
-          )}
+                </View>
+              </>
+            )}
+          </>
+        )}
+
+        {/* About: Why Pro (quiz) + MyOwnSafe Pro (paywall) */}
+        <Text style={styles.sectionTitle}>About</Text>
+        <View style={styles.card}>
           <TouchableOpacity
             style={[styles.row, styles.rowBtn]}
             onPress={() => setPremiumExpanded((e) => !e)}

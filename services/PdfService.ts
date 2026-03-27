@@ -1,4 +1,3 @@
-import { beginShareTrace } from '@/services/shareTrace';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as LegacyFS from 'expo-file-system/legacy';
@@ -326,15 +325,10 @@ export async function exportDocumentAsPdf(
 
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    const endTrace = beginShareTrace('PdfService.exportDocumentAsPdf', 'H5');
-    try {
-      await Sharing.shareAsync(pdfUri, {
-        mimeType: 'application/pdf',
-        UTI: 'com.adobe.pdf',
-        dialogTitle: `Export "${doc.title}"`,
-      });
-    } finally {
-      endTrace();
-    }
+    await Sharing.shareAsync(pdfUri, {
+      mimeType: 'application/pdf',
+      UTI: 'com.adobe.pdf',
+      dialogTitle: `Export "${doc.title}"`,
+    });
   }
 }

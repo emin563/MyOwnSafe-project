@@ -4,7 +4,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import { Linking } from 'react-native';
-import { beginShareTrace } from '@/services/shareTrace';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { PillButton } from './PillButton';
 import { AI_DESTINATIONS, type AiDestination } from '@/services/AiDestinations';
@@ -44,15 +43,10 @@ export function AiDestinationSheet({ visible, onClose, fileUri, minimal = false 
 
   const shareDocument = async () => {
     if (!fileUri) return;
-    const endTrace = beginShareTrace('AiDestinationSheet.shareDocument', 'H4');
-    try {
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) return;
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(fileUri, { dialogTitle: 'Share to AI' });
-    } finally {
-      endTrace();
-    }
+    const canShare = await Sharing.isAvailableAsync();
+    if (!canShare) return;
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await Sharing.shareAsync(fileUri, { dialogTitle: 'Share to AI' });
   };
 
   const handleDestination = async (dest: AiDestination) => {

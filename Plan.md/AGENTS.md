@@ -1,4 +1,4 @@
-# agends.md — Project context (read after context reset)
+# AGENTS.md — Project context (read after context reset)
 
 ## Project identity
 - **App:** Vault - Document Archive (slug: PromptBlueprint). Offline-first document, receipt, and warranty archive. No backend; data stays on device.
@@ -7,10 +7,11 @@
 
 ## Folder structure (concise)
 - `app/` — Expo Router: `_layout.tsx` (root, lock + DB bootstrap), `(drawer)/` (drawer + index), `capture.tsx`, `document/[id].tsx`, `settings.tsx`.
-- `components/` — `ui/` (PaywallModal, QuizWhyPro, InputModal, ConfirmModal, PillButton, …), `layout/CustomDrawerContent.tsx`, `document/DocumentCard.tsx`, `security/LockScreen.tsx`.
+- `components/` — `ui/` (PaywallModal, QuizWhyPro, InputModal, ConfirmModal, PillButton, …), `layout/CustomDrawerContent.tsx`, `document/DocumentCard.tsx`, `security/LockScreen.tsx`, `settings/` (`GoogleDriveBackupSection`, `GoogleDriveOAuthPanel`, `googleDriveBackup.styles`).
+- `config/` — `googleDrive.ts` reads `expo.extra.googleDriveOAuth` (Android/Web OAuth client IDs for Drive).
 - `store/app-store.ts` — Zustand: categories, documents, isPro, pin/biometric, loadSettings, loadDocuments, addDocument, etc.
 - `db/` — schema, settings, documents, categories, types. SQLite: `documents` (file_uri, purchase_price, expiry_date, notification_id), `categories` (icon_name), `settings` (key/value).
-- `services/` — BackupService (jszip), NotificationService (expo-notifications), PdfService (expo-print), StorageService (archive/).
+- `services/` — BackupService (jszip + optional Drive upload hook), GoogleDriveSync (OAuth tokens, Drive folder, upload), `mlKitDocumentScan(.android).ts` + `mlKitDocumentScan.types.ts`, NotificationService, PdfService, StorageService, `ocrExtract.ts`, etc.
 - `theme/` — Colors, Spacing, Typography, Radius.
 
 ## Current behaviour (as implemented today)
@@ -24,10 +25,13 @@
 - **Free trial/quota behavior:** On Free, multi-scan OCR consumes read trials only when recognized text is produced; duplicating documents reuses stored OCR text without spending additional reads.
 - **Performance / search:** Drawer search is debounced (avoids per-keystroke expensive work and route replacement). DB search is supported by hot-path SQLite indexes and uses `EXISTS`-based tag matching to reduce join/row explosion; “newest” results avoid redundant JS sorting.
 - **Backup / restore reliability + security:** Backup restore treats the backup as untrusted input: validates/caps sizes/counts, sanitizes archive entry basenames, derives restored `documents.file_uri` only from safe archive basenames, and writes archive entries sequentially to reduce memory spikes.
+- **Google Drive backup (Android):** After a local `VaultBackup.zip` is written, `BackupService.createBackup()` calls `maybeUploadVaultBackupToGoogleDrive` (silent; failures do not block the share sheet). OAuth uses `expo-auth-session` only inside a **lazy-loaded** `GoogleDriveOAuthPanel` (avoids pulling `expo-auth-session` index → PKCE → `expo-crypto` on every Settings load). `GoogleDriveSync` stores tokens in **expo-secure-store** when the native module exists, else falls back to SQLite `settings` keys (`googleDriveTokenV1`, `googleDriveFolderIdV1`). `TokenResponse` is imported from `expo-auth-session/build/TokenRequest` (not the package root) so `BackupService` → `GoogleDriveSync` does not load PKCE at import time. Configure `app.json` → `extra.googleDriveOAuth` (`androidClientId`, `webClientId`); enable Drive API + OAuth in Google Cloud. **Do not** add `expo-crypto` under `expo.plugins` — it has no config plugin; it autolinks with a native rebuild (`expo run:android` / EAS).
+- **Native document scan (Android):** `@infinitered/react-native-mlkit-document-scanner` provides ML Kit Document Scanner when the native module is linked. **Do not** `require()` the package entry during render — it calls `requireNativeModule` and throws if missing. Use `requireOptionalNativeModule('RNMLKitDocumentScanner')` from `expo-modules-core` in `mlKitDocumentScan.android.ts`: if present, the capture shutter opens the ML Kit UI (multi-page up to 100 pages, JPEG); if absent (e.g. stale dev client), `isAndroidMlKitScannerPlatform()` is false and **expo-camera** is used. Rebuild the native app after adding the dependency.
 - **OCR polling & quota trust boundary:** OCR editor polls using a cancellable `setTimeout` loop (no overlapping async DB calls). Multi-scan passes pre-extracted OCR (`preOcrText`) and it is accepted as “trusted” only when it matches the internal `pendingOcrText` draft for the exact `fileUri`/`fileType`, enforcing Free-tier quota boundaries.
 - **EAS Update:** expo-updates is configured. `app.json` uses `runtimeVersion` (e.g. appVersion policy) and `updates.url` pointing to the EAS project. `eas.json` defines channels (e.g. preview, production) for OTA updates. JS/asset updates are published via `eas update --branch <branch>`.
 - **Lock:** LockScreen reacts to AppState (e.g. background → lock). Root layout and auth flags are used to avoid lock loops and to control when biometric is requested.
 - **Data:** File binaries live in the filesystem (e.g. `archive/` via StorageService); SQLite stores metadata and `file_uri`. Backup zips DB and archive; restore replaces data and reloads the store.
+- **Settings keys (Drive):** `googleDriveAutoUpload` (`'1'` / `'0'`) toggles silent upload after each backup build.
 
 ## Plans (reference only; see .cursor/plans/ for full detail)
 - **prompt_blueprint_architecture** — Original app: Expo Router, SQLite, Zustand, drawer; later pivoted to documents.

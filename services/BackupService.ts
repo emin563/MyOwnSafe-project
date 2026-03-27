@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import * as LegacyFS from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
-import { beginShareTrace } from '@/services/shareTrace';
+import { maybeUploadVaultBackupToGoogleDrive } from '@/services/GoogleDriveSync';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '@/db/schema';
 import { getSetting } from '@/db/settings';
@@ -112,20 +112,18 @@ export async function createBackup(): Promise<void> {
     encoding: LegacyFS.EncodingType.Base64,
   });
 
+  const zipDisplayName = zipPath.split('/').pop() ?? 'Vault_Backup.zip';
+  await maybeUploadVaultBackupToGoogleDrive(zipPath, zipDisplayName);
+
   // 4. Share the zip (and always cleanup the generated cache file).
   try {
     const canShare = await Sharing.isAvailableAsync();
     if (canShare) {
-      const endTrace = beginShareTrace('BackupService.createBackup', 'H3');
-      try {
-        await Sharing.shareAsync(zipPath, {
-          mimeType: 'application/zip',
-          UTI: 'public.zip-archive',
-          dialogTitle: 'Save Vault Backup',
-        });
-      } finally {
-        endTrace();
-      }
+      await Sharing.shareAsync(zipPath, {
+        mimeType: 'application/zip',
+        UTI: 'public.zip-archive',
+        dialogTitle: 'Save Vault Backup',
+      });
     }
   } finally {
     // Avoid unbounded growth in cache/ from repeated backups.
@@ -371,16 +369,11 @@ export async function shareSelectedDocuments(
   try {
     const canShare = await Sharing.isAvailableAsync();
     if (canShare) {
-      const endTrace = beginShareTrace('BackupService.shareSelectedDocuments', 'H3');
-      try {
-        await Sharing.shareAsync(zipPath, {
-          mimeType: 'application/zip',
-          UTI: 'public.zip-archive',
-          dialogTitle: 'Share selected documents',
-        });
-      } finally {
-        endTrace();
-      }
+      await Sharing.shareAsync(zipPath, {
+        mimeType: 'application/zip',
+        UTI: 'public.zip-archive',
+        dialogTitle: 'Share selected documents',
+      });
     }
   } finally {
     // Avoid unbounded growth in cache/ from repeated zips.

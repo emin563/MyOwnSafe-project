@@ -85,7 +85,8 @@
           "color": "#10a37f",
           "defaultChannel": "vault-expiry"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -95,6 +96,10 @@
       "router": {},
       "eas": {
         "projectId": "272a3754-8793-4c10-980a-5e6ae967a076"
+      },
+      "googleDriveOAuth": {
+        "androidClientId": "655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn.apps.googleusercontent.com",
+        "webClientId": ""
       }
     }
   }

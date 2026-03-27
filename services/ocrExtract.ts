@@ -1,6 +1,5 @@
 import { Platform } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import * as LegacyFS from 'expo-file-system/legacy';
 
 export type OcrExtractResult =
   | { text: string | null; ok: true }
@@ -95,50 +94,9 @@ function scoreOcrText(text: string): number {
   return lenScore + letters * 0.35 + digits * 0.1 + words * 0.8 - symbolPenalty * 0.6;
 }
 
-async function createOcrPreprocessVariants(
-  fileUri: string,
-  options?: OcrOptions
-): Promise<string[]> {
-  const variants = [fileUri];
-  try {
-    const info = await LegacyFS.getInfoAsync(fileUri);
-    const widthHint = (info as any)?.width as number | undefined;
-    const needsUpscale = typeof widthHint === 'number' ? widthHint < 1400 : true;
-    const { manipulateAsync, SaveFormat } = await import('expo-image-manipulator');
-
-    // Variant 1: normalized JPEG + optional upscale for clearer OCR boundaries.
-    const enhanced = await manipulateAsync(
-      fileUri,
-      needsUpscale
-        ? [{ resize: { width: 1800 } }]
-        : [],
-      {
-        compress: 1,
-        format: SaveFormat.JPEG,
-      }
-    );
-    if (enhanced?.uri && enhanced.uri !== fileUri) variants.push(enhanced.uri);
-
-    // Variant 2: slight deskew attempts for document-like content.
-    if (options?.mode === 'document' || options?.mode === 'receipt' || options?.mode === 'auto') {
-      const rotateA = await manipulateAsync(
-        enhanced?.uri ?? fileUri,
-        [{ rotate: -1 }],
-        { compress: 1, format: SaveFormat.JPEG }
-      );
-      if (rotateA?.uri && !variants.includes(rotateA.uri)) variants.push(rotateA.uri);
-
-      const rotateB = await manipulateAsync(
-        enhanced?.uri ?? fileUri,
-        [{ rotate: 1 }],
-        { compress: 1, format: SaveFormat.JPEG }
-      );
-      if (rotateB?.uri && !variants.includes(rotateB.uri)) variants.push(rotateB.uri);
-    }
-  } catch {
-    // Safe fallback: keep original only.
-  }
-  return variants;
+/** Single variant: OCR on the original image (no expo-image-manipulator preprocessing). */
+async function createOcrPreprocessVariants(fileUri: string, _options?: OcrOptions): Promise<string[]> {
+  return [fileUri];
 }
 
 /**
