@@ -11,7 +11,10 @@
       "url": "https://u.expo.dev/272a3754-8793-4c10-980a-5e6ae967a076"
     },
     "icon": "./assets/images/icon.png",
-    "scheme": "promptblueprint",
+    "scheme": [
+      "promptblueprint",
+      "com.googleusercontent.apps.655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn"
+    ],
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {

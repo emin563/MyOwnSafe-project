@@ -4,6 +4,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import {
+  GOOGLE_PRIVACY_CHOICE,
+  GOOGLE_PRIVACY_DRIVE,
+  GOOGLE_PRIVACY_SCANNER,
+  GOOGLE_PRIVACY_SECTION_TITLE,
+} from '@/constants/googleServicesPrivacy';
 
 const FACTS = [
   {
@@ -68,10 +74,38 @@ export default function PrivacyOfflineScreen() {
           ))}
         </View>
 
+        <Text style={styles.sectionHeading}>{GOOGLE_PRIVACY_SECTION_TITLE}</Text>
+        <View style={styles.card}>
+          <View style={styles.factRow}>
+            <View style={styles.factIcon}>
+              <Ionicons name="scan-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.factText}>
+              <Text style={styles.factTitle}>{GOOGLE_PRIVACY_SCANNER.title}</Text>
+              <Text style={styles.factDesc}>{GOOGLE_PRIVACY_SCANNER.body}</Text>
+            </View>
+          </View>
+          <View style={[styles.factRow, styles.factRowLast]}>
+            <View style={styles.factIcon}>
+              <Ionicons name="logo-google" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.factText}>
+              <Text style={styles.factTitle}>{GOOGLE_PRIVACY_DRIVE.title}</Text>
+              <Text style={styles.factDesc}>{GOOGLE_PRIVACY_DRIVE.body}</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.note}>
+          <Ionicons name="checkmark-circle-outline" size={18} color={Colors.textMuted} />
+          <Text style={styles.noteText}>{GOOGLE_PRIVACY_CHOICE}</Text>
+        </View>
+
         <View style={styles.note}>
           <Ionicons name="information-circle-outline" size={18} color={Colors.textMuted} />
           <Text style={styles.noteText}>
-            If you share a document (for example “Open in” or “Save to device”), your OS and the receiving app will handle the file.
+            If you share a document (for example Open in another app or Save to device), your OS and the receiving app
+            will handle the file.
           </Text>
         </View>
       </ScrollView>
@@ -139,6 +173,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: Typography.lineHeightBase,
   },
+  sectionHeading: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.xs,
+  },
   card: {
     backgroundColor: Colors.surfaceRaised,
     borderRadius: Radius.lg,
@@ -153,6 +197,9 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+  },
+  factRowLast: {
+    borderBottomWidth: 0,
   },
   factIcon: {
     width: 36,
@@ -181,7 +228,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     alignItems: 'flex-start',
     paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.lg,
+    paddingTop: Spacing.lg,
   },
   noteText: {
     flex: 1,
@@ -190,4 +237,3 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
-

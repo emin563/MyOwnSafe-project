@@ -244,7 +244,7 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
           <TouchableOpacity
             style={styles.newButton}
             onPress={() => {
-              router.push({ pathname: '/capture', params: { tab: 'import' } });
+              router.push('/capture');
               props.navigation.closeDrawer();
             }}
             activeOpacity={0.7}

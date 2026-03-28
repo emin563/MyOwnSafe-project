@@ -3,6 +3,7 @@ import { PaywallModal, QuizWhyPro } from '@/components/ui';
 import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
 import { cancelAllNotifications } from '@/services/NotificationService';
+import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
 import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 import { getPerformanceMetrics, resetPerformanceMetrics } from '@/services/performanceMetrics';
 import { getOcrMetrics, resetOcrMetrics } from '@/services/ocrMetrics';
@@ -21,6 +22,7 @@ import {
   type OcrQaChecklist,
   type OcrQaCaseId,
 } from '@/services/ocrQaChecklist';
+import { GOOGLE_PRIVACY_MODAL_BODY, GOOGLE_PRIVACY_MODAL_TITLE } from '@/constants/googleServicesPrivacy';
 import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
@@ -29,17 +31,20 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Modal,
+    Platform,
     Share,
     ScrollView,
     StyleSheet,
     Switch,
     Text,
     TouchableOpacity,
-    View
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -57,10 +62,14 @@ export default function SettingsScreen() {
     setBiometricEnabled,
     loadDocuments,
     loadCategories,
+    loadSettings,
     setUnlocked,
     setIsPro,
     isPro,
+    setGoogleExtensionsPrivacyTipDismissed,
     resetOcrReadTrialsForDev,
+    mlKitScannerMode,
+    setMlKitScannerMode,
   } = useAppStore();
 
   const [backupLoading, setBackupLoading] = useState(false);
@@ -80,6 +89,28 @@ export default function SettingsScreen() {
   const [regressionMessage, setRegressionMessage] = useState<string | null>(null);
   const [regressionReportActionAt, setRegressionReportActionAt] = useState<string | null>(null);
   const [developerToolsVisible, setDeveloperToolsVisible] = useState(false);
+  const [googlePrivacyModalVisible, setGooglePrivacyModalVisible] = useState(false);
+  const [googlePrivacyDontShowAgain, setGooglePrivacyDontShowAgain] = useState(false);
+  const googlePrivacyTipShownThisSessionRef = useRef(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void (async () => {
+        await loadSettings();
+        if (cancelled) return;
+        const { googleExtensionsPrivacyTipDismissed } = useAppStore.getState();
+        if (googleExtensionsPrivacyTipDismissed) return;
+        if (googlePrivacyTipShownThisSessionRef.current) return;
+        googlePrivacyTipShownThisSessionRef.current = true;
+        setGooglePrivacyDontShowAgain(false);
+        setGooglePrivacyModalVisible(true);
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [loadSettings])
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -374,7 +405,9 @@ export default function SettingsScreen() {
             </View>
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>Privacy & Offline</Text>
-              <Text style={styles.rowHint}>How Vault keeps your documents on-device</Text>
+              <Text style={styles.rowHint}>
+                On-device vault, optional Google scanner &amp; Drive backup, and how to use them privately
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
           </TouchableOpacity>
@@ -393,7 +426,8 @@ export default function SettingsScreen() {
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>Text from photo</Text>
               <Text style={styles.rowHint}>
-                On-device OCR, free trials, and how vault search uses extracted text — tap for details.
+                On-device OCR, free trials, and how vault search uses extracted text. Turn it on when you add a document
+                — tap for details.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -416,6 +450,43 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
           </TouchableOpacity>
         </View>
+
+        {Platform.OS === 'android' ? (
+          <>
+            <Text style={styles.sectionTitle}>Scan defaults</Text>
+            <View style={styles.card}>
+              <Text style={styles.scanDefaultLabel}>Google document scanner</Text>
+              <Text style={styles.scanMlKitHint}>
+                Recommended: Crop only — uses Google&apos;s detect-and-straighten without extra filter passes (clearer text,
+                less blur from recompression). Choose Full if you need every enhance / filter tool in the scanner UI.
+              </Text>
+              <View style={styles.chipRow}>
+                {(
+                  [
+                    { mode: 'base' as MlKitScannerMode, label: 'Crop only' },
+                    { mode: 'base_with_filter' as MlKitScannerMode, label: 'Crop + filters' },
+                    { mode: 'full' as MlKitScannerMode, label: 'Full' },
+                  ] as const
+                ).map(({ mode, label }) => {
+                  const active = mlKitScannerMode === mode;
+                  return (
+                    <TouchableOpacity
+                      key={mode}
+                      style={[styles.scanChip, active && styles.scanChipActive]}
+                      onPress={() => {
+                        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        void setMlKitScannerMode(mode);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.scanChipText, active && styles.scanChipTextActive]}>{label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          </>
+        ) : null}
 
         {!isPro && (
           <>
@@ -1043,6 +1114,61 @@ export default function SettingsScreen() {
           setPaywallVisible(false);
         }}
       />
+      <Modal
+        visible={googlePrivacyModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGooglePrivacyModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.googlePrivacyOverlay}
+          activeOpacity={1}
+          onPress={() => setGooglePrivacyModalVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.googlePrivacyCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.googlePrivacyTitle}>{GOOGLE_PRIVACY_MODAL_TITLE}</Text>
+            <Text style={styles.googlePrivacyBody}>{GOOGLE_PRIVACY_MODAL_BODY}</Text>
+            <TouchableOpacity
+              style={styles.googlePrivacyCheckRow}
+              activeOpacity={0.8}
+              onPress={() => setGooglePrivacyDontShowAgain((v) => !v)}
+            >
+              <Ionicons
+                name={googlePrivacyDontShowAgain ? 'checkbox-outline' : 'square-outline'}
+                size={20}
+                color={Colors.primary}
+              />
+              <Text style={styles.googlePrivacyCheckText}>Do not show this again</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.googlePrivacyPrimaryBtn}
+              activeOpacity={0.85}
+              onPress={async () => {
+                if (googlePrivacyDontShowAgain) {
+                  await setGoogleExtensionsPrivacyTipDismissed(true);
+                }
+                setGooglePrivacyModalVisible(false);
+              }}
+            >
+              <Text style={styles.googlePrivacyPrimaryBtnText}>Got it</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.googlePrivacyLinkBtn}
+              activeOpacity={0.8}
+              onPress={() => {
+                setGooglePrivacyModalVisible(false);
+                router.push('/privacy-offline');
+              }}
+            >
+              <Text style={styles.googlePrivacyLinkText}>Open Privacy &amp; Offline</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1268,5 +1394,114 @@ const styles = StyleSheet.create({
   },
   regressionBtnTextFailActive: {
     color: Colors.danger,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+  },
+  scanDefaultLabel: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    fontWeight: Typography.fontWeightSemibold,
+    paddingHorizontal: Spacing.base,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xs,
+  },
+  scanMlKitHint: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
+    paddingHorizontal: Spacing.base,
+    paddingBottom: Spacing.sm,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.base,
+    paddingBottom: Spacing.md,
+  },
+  scanChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  scanChipActive: {
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.14)',
+  },
+  scanChipText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  scanChipTextActive: {
+    color: Colors.primary,
+  },
+  googlePrivacyOverlay: {
+    flex: 1,
+    backgroundColor: Colors.overlay,
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.lg,
+  },
+  googlePrivacyCard: {
+    backgroundColor: Colors.surfaceRaised,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.lg,
+    maxWidth: 400,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  googlePrivacyTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
+    marginBottom: Spacing.md,
+  },
+  googlePrivacyBody: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 22,
+    marginBottom: Spacing.md,
+  },
+  googlePrivacyCheckRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  googlePrivacyCheckText: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    flex: 1,
+  },
+  googlePrivacyPrimaryBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    marginBottom: Spacing.sm,
+  },
+  googlePrivacyPrimaryBtnText: {
+    color: Colors.white,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  googlePrivacyLinkBtn: {
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+  },
+  googlePrivacyLinkText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
   },
 });

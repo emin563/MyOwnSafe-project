@@ -30,6 +30,10 @@ import {
   getTotalFileCount,
 } from '@/db/documents';
 import { getSetting, setSetting } from '@/db/settings';
+import type { OcrLanguageCode } from '@/services/ocrLanguages';
+import { normalizeOcrLanguageCode } from '@/services/ocrLanguages';
+import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
+import { normalizeMlKitScannerMode } from '@/services/mlKitScannerMode';
 import {
   scheduleExpiryNotification,
   cancelNotification,
@@ -98,14 +102,19 @@ type AppStore = {
   /** User dismissed multi-page tested-limit disclaimer. */
   multiPageLimitDisclaimerDismissed: boolean;
   setMultiPageLimitDisclaimerDismissed: (dismissed: boolean) => Promise<void>;
-  captureQualityProfile: 'fast' | 'balanced' | 'max';
-  setCaptureQualityProfile: (profile: 'fast' | 'balanced' | 'max') => Promise<void>;
-  pdfPagePlacementMode: 'fit' | 'fill';
-  setPdfPagePlacementMode: (mode: 'fit' | 'fill') => Promise<void>;
+  /** User dismissed Google multi-page scanner 100-page warning. */
+  mlKitMultiPageWarningDismissed: boolean;
+  setMlKitMultiPageWarningDismissed: (dismissed: boolean) => Promise<void>;
+  /** User dismissed Settings one-shot notice about Google scanner / Drive and privacy. */
+  googleExtensionsPrivacyTipDismissed: boolean;
+  setGoogleExtensionsPrivacyTipDismissed: (dismissed: boolean) => Promise<void>;
   ocrProcessingMode: 'auto' | 'document' | 'receipt' | 'handwritten';
   setOcrProcessingMode: (mode: 'auto' | 'document' | 'receipt' | 'handwritten') => Promise<void>;
-  ocrLanguage: 'auto' | 'en' | 'tr';
-  setOcrLanguage: (lang: 'auto' | 'en' | 'tr') => Promise<void>;
+  ocrLanguage: OcrLanguageCode;
+  setOcrLanguage: (lang: OcrLanguageCode) => Promise<void>;
+  /** Android Google document scanner UI depth (crop-only vs filters vs full). */
+  mlKitScannerMode: MlKitScannerMode;
+  setMlKitScannerMode: (mode: MlKitScannerMode) => Promise<void>;
 
   // Toast (lightweight UX feedback)
   toast: { message: string; type?: 'success' | 'danger' | 'info' } | null;
@@ -196,10 +205,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ocrExtractOnCapture: false,
   ocrReadTrialsUsed: 0,
   multiPageLimitDisclaimerDismissed: false,
-  captureQualityProfile: 'balanced',
-  pdfPagePlacementMode: 'fill',
+  mlKitMultiPageWarningDismissed: false,
+  googleExtensionsPrivacyTipDismissed: false,
   ocrProcessingMode: 'auto',
   ocrLanguage: 'auto',
+  mlKitScannerMode: 'base',
   pendingOcrText: null,
   toast: null,
   pendingBulkImports: [],
@@ -239,10 +249,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const ocrExtractVal = await getSetting('ocrExtractOnCapture');
     const ocrReadTrialsUsedVal = await getSetting('ocrReadTrialsUsed');
     const multiPageLimitDisclaimerDismissedVal = await getSetting('multiPageLimitDisclaimerDismissed');
-    const captureQualityProfileVal = await getSetting('captureQualityProfile');
-    const pdfPagePlacementModeVal = await getSetting('pdfPagePlacementMode');
+    const mlKitMultiPageWarningDismissedVal = await getSetting('mlKitMultiPageWarningDismissed');
+    const googleExtensionsPrivacyTipDismissedVal = await getSetting('googleExtensionsPrivacyTipDismissed');
     const ocrProcessingModeVal = await getSetting('ocrProcessingMode');
     const ocrLanguageVal = await getSetting('ocrLanguage');
+    const mlKitScannerModeVal = await getSetting('mlKitScannerMode');
     const pinEnabled = pinEnabledVal === 'true';
     const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
@@ -251,18 +262,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const vaultNamePromptSeen = vaultNamePromptSeenVal === 'true';
     const ocrExtractOnCapture = ocrExtractVal === 'true';
     const multiPageLimitDisclaimerDismissed = multiPageLimitDisclaimerDismissedVal === 'true';
-    const captureQualityProfile =
-      captureQualityProfileVal === 'fast' || captureQualityProfileVal === 'max'
-        ? captureQualityProfileVal
-        : 'balanced';
-    const pdfPagePlacementMode = pdfPagePlacementModeVal === 'fit' ? 'fit' : 'fill';
+    const mlKitMultiPageWarningDismissed = mlKitMultiPageWarningDismissedVal === 'true';
+    const googleExtensionsPrivacyTipDismissed = googleExtensionsPrivacyTipDismissedVal === 'true';
     const ocrProcessingMode =
       ocrProcessingModeVal === 'document' ||
       ocrProcessingModeVal === 'receipt' ||
       ocrProcessingModeVal === 'handwritten'
         ? ocrProcessingModeVal
         : 'auto';
-    const ocrLanguage = ocrLanguageVal === 'en' || ocrLanguageVal === 'tr' ? ocrLanguageVal : 'auto';
+    const ocrLanguage = normalizeOcrLanguageCode(ocrLanguageVal ?? undefined);
+    const mlKitScannerMode = normalizeMlKitScannerMode(mlKitScannerModeVal ?? undefined);
     let ocrReadTrialsUsed = ocrReadTrialsUsedVal != null ? Number.parseInt(ocrReadTrialsUsedVal, 10) : 0;
     if (!Number.isFinite(ocrReadTrialsUsed) || ocrReadTrialsUsed < 0) {
       ocrReadTrialsUsed = 0;
@@ -290,10 +299,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       vaultNamePromptVisible: !vaultNamePromptSeen,
       ocrExtractOnCapture,
       multiPageLimitDisclaimerDismissed,
-      captureQualityProfile,
-      pdfPagePlacementMode,
+      mlKitMultiPageWarningDismissed,
+      googleExtensionsPrivacyTipDismissed,
       ocrProcessingMode,
       ocrLanguage,
+      mlKitScannerMode,
       ocrReadTrialsUsed,
       isUnlocked: !lockActive,
     });
@@ -372,22 +382,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ multiPageLimitDisclaimerDismissed: dismissed });
   },
 
-  setCaptureQualityProfile: async (profile) => {
-    await setSetting('captureQualityProfile', profile);
-    set({ captureQualityProfile: profile });
+  setMlKitMultiPageWarningDismissed: async (dismissed) => {
+    await setSetting('mlKitMultiPageWarningDismissed', String(dismissed));
+    set({ mlKitMultiPageWarningDismissed: dismissed });
   },
 
-  setPdfPagePlacementMode: async (mode) => {
-    await setSetting('pdfPagePlacementMode', mode);
-    set({ pdfPagePlacementMode: mode });
+  setGoogleExtensionsPrivacyTipDismissed: async (dismissed) => {
+    await setSetting('googleExtensionsPrivacyTipDismissed', String(dismissed));
+    set({ googleExtensionsPrivacyTipDismissed: dismissed });
   },
+
   setOcrProcessingMode: async (mode) => {
     await setSetting('ocrProcessingMode', mode);
     set({ ocrProcessingMode: mode });
   },
   setOcrLanguage: async (lang) => {
-    await setSetting('ocrLanguage', lang);
-    set({ ocrLanguage: lang });
+    const normalized = normalizeOcrLanguageCode(lang);
+    await setSetting('ocrLanguage', normalized);
+    set({ ocrLanguage: normalized });
+  },
+  setMlKitScannerMode: async (mode) => {
+    const normalized = normalizeMlKitScannerMode(mode);
+    await setSetting('mlKitScannerMode', normalized);
+    set({ mlKitScannerMode: normalized });
   },
 
   showToast: (message, type = 'info') => {

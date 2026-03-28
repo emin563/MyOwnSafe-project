@@ -17,8 +17,8 @@ function GoogleDriveNotConfigured() {
         <View style={styles.rowContent}>
           <Text style={styles.rowLabel}>Google Drive backup</Text>
           <Text style={styles.rowHint}>
-            Add googleDriveOAuth.androidClientId and webClientId to app.json extra (Google Cloud OAuth clients), then
-            rebuild the app.
+            Add googleDriveOAuth.androidClientId in app.json extra (Android OAuth client from Google Cloud Console,
+            package + SHA-1), then rebuild the native app.
           </Text>
         </View>
       </View>

@@ -44,7 +44,7 @@ async function openWithSharingFallback(uri: string, mime: string): Promise<void>
   const Sharing = await import('expo-sharing');
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(uri, {
-      dialogTitle: 'Open with…',
+      dialogTitle: 'Choose app',
       mimeType: mime,
     });
     return;
@@ -103,7 +103,7 @@ export async function openFileWithOtherApps(uri: string, fileType: FileType): Pr
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ReactNativeBlobUtil = require('react-native-blob-util').default as typeof import('react-native-blob-util').default;
     if (Platform.OS === 'android') {
-      await ReactNativeBlobUtil.android.actionViewIntent(path, mime, 'Open with…');
+      await ReactNativeBlobUtil.android.actionViewIntent(path, mime, 'Choose app');
       return;
     }
     if (Platform.OS === 'ios') {

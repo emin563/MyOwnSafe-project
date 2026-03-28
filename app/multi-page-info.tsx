@@ -19,7 +19,7 @@ const SECTIONS = [
     icon: 'document-outline' as const,
     title: 'How Multi-page works',
     body:
-      'Turn on Multi-page PDF in Add → Camera, capture pages one by one, then tap Finish to generate a single PDF file.',
+      'With Vault Pro, turn on Multi-page PDF on the add-document screen or under Camera, capture pages one by one, then tap Finish to generate a single PDF file.',
   },
   {
     icon: 'warning-outline' as const,
@@ -31,7 +31,7 @@ const SECTIONS = [
     icon: 'library-outline' as const,
     title: 'For long books or files',
     body:
-      'For very long content, scan in sections (for example 200-500 pages per part), then keep them as separate files or merge externally.',
+      `Google's document scanner accepts up to ${MULTI_PAGE_TESTED_LIMIT} pages per run. Scan another batch for more pages, keep separate PDFs in your vault, or merge externally if needed.`,
   },
   {
     icon: 'checkmark-done-outline' as const,

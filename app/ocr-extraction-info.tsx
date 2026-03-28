@@ -19,7 +19,7 @@ const SECTIONS = [
     icon: 'camera-outline' as const,
     title: 'How to enable',
     body:
-      'Open Add → Camera or Add → Import and turn on the “Text from photo” chip before you capture or pick an image. Nothing is read until you opt in for that session.',
+      'When you add a document, use “Text from photo (OCR)” on the first screen, or the same chip under Camera / Import, before you scan or pick an image. OCR options (mode and language) are on that screen—not in Settings. Nothing is read until you opt in.',
   },
   {
     icon: 'phone-portrait-outline' as const,

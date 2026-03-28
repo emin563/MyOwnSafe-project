@@ -1,10 +1,11 @@
 import { requireOptionalNativeModule } from 'expo-modules-core';
+import { useAppStore } from '@/store/app-store';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 import type { MlKitScanOutcome } from './mlKitDocumentScan.types';
 
 export type { MlKitScanOutcome } from './mlKitDocumentScan.types';
 
 const ML_SCAN_PAGE_LIMIT_SINGLE = 1;
-const ML_SCAN_PAGE_LIMIT_MULTI = 100;
 
 type NativeDocumentScanner = {
   launchDocumentScannerAsync?: (options: Record<string, unknown>) => Promise<{
@@ -42,10 +43,13 @@ export async function launchVaultMlKitScan(multiPageMode: boolean): Promise<MlKi
   }
 
   try {
+    const scannerMode = useAppStore.getState().mlKitScannerMode;
     const result = await mod.launchDocumentScannerAsync({
-      pageLimit: multiPageMode ? ML_SCAN_PAGE_LIMIT_MULTI : ML_SCAN_PAGE_LIMIT_SINGLE,
+      pageLimit: multiPageMode ? MULTI_PAGE_TESTED_LIMIT : ML_SCAN_PAGE_LIMIT_SINGLE,
       galleryImportAllowed: true,
       resultFormats: 'jpeg',
+      /** Default in store is `base`: crop-only pipeline — avoids heavy filter / “enhance” contrast and extra JPEG passes. */
+      scannerMode,
     });
 
     if (result.canceled) {

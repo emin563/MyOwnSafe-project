@@ -10,6 +10,7 @@ export { AiEducationSheet } from './AiEducationSheet';
 export { AiShareDisclaimerModal } from './AiShareDisclaimerModal';
 export { LimitReachedDialog } from './LimitReachedDialog';
 export { ProFeatureDialog } from './ProFeatureDialog';
+export { ProIncludedFeatureDialog } from './ProIncludedFeatureDialog';
 export { PromptTemplateSheet } from './PromptTemplateSheet';
 export { AiDestinationSheet } from './AiDestinationSheet';
 export { UseAiWorkflowSheet } from './UseAiWorkflowSheet';

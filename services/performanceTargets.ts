@@ -2,7 +2,8 @@
  * Centralized product targets for performance and tested operational limits.
  * Keep these values in sync with UI copy and QA expectations.
  */
-export const MULTI_PAGE_TESTED_LIMIT = 500;
+/** Max pages per Google document-scanner session and app-tested multi-page PDF guidance. */
+export const MULTI_PAGE_TESTED_LIMIT = 100;
 
 /**
  * Service-level objectives (SLO) for key user flows.

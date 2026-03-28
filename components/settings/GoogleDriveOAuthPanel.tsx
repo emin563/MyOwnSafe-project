@@ -1,4 +1,4 @@
-import { getGoogleDriveOAuthConfig } from '@/config/googleDrive';
+import { getGoogleAndroidOAuthRedirectUri, getGoogleDriveOAuthConfig } from '@/config/googleDrive';
 import { getSetting, setSetting } from '@/db/settings';
 import {
   clearGoogleDriveConnection,
@@ -30,6 +30,7 @@ WebBrowser.maybeCompleteAuthSession();
  */
 export default function GoogleDriveOAuthPanel() {
   const cfg = getGoogleDriveOAuthConfig();
+  const androidRedirectUri = getGoogleAndroidOAuthRedirectUri(cfg.androidClientId ?? '');
   const [connected, setConnected] = useState(false);
   const [autoUpload, setAutoUpload] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -37,14 +38,15 @@ export default function GoogleDriveOAuthPanel() {
   const [request, response, promptAsync] = Google.useAuthRequest(
     {
       androidClientId: cfg.androidClientId,
-      webClientId: cfg.webClientId,
+      ...(cfg.webClientId ? { webClientId: cfg.webClientId } : {}),
+      ...(androidRedirectUri ? { redirectUri: androidRedirectUri } : {}),
       scopes: ['https://www.googleapis.com/auth/drive.file'],
       extraParams: {
         access_type: 'offline',
         prompt: 'consent',
       },
     },
-    { path: 'oauthredirect' }
+    androidRedirectUri ? {} : { path: 'oauthredirect' }
   );
 
   const refreshState = useCallback(async () => {

@@ -24,11 +24,16 @@ import { getTotalFileCount } from '@/db/documents';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import type { FileType } from '@/db/types';
-import { LimitReachedDialog, PaywallModal } from '@/components/ui';
+import { LimitReachedDialog, PaywallModal, ProIncludedFeatureDialog } from '@/components/ui';
 import { createPdfFromImages } from '@/services/PdfService';
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
+import {
+  OCR_LANGUAGE_CATEGORIES,
+  getOcrLanguageLabel,
+  type OcrLanguageCode,
+} from '@/services/ocrLanguages';
 import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 import { recordPerformanceMetric } from '@/services/performanceMetrics';
 import { recordOcrPageMetric } from '@/services/ocrMetrics';
@@ -39,33 +44,13 @@ import {
 
 const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
 const PDF_BUILD_TIMEOUT_MS = 6 * 60 * 1000;
-type CaptureQualityProfile = 'fast' | 'balanced' | 'max';
-type PdfPagePlacementMode = 'fit' | 'fill';
+/** Fixed PDF page layout when merging camera pages (same as previous default). */
+const DEFAULT_PDF_PAGE_PLACEMENT: 'fill' | 'fit' = 'fill';
 type OcrProcessingMode = 'auto' | 'document' | 'receipt' | 'handwritten';
-type OcrLanguage = 'auto' | 'en' | 'tr';
 const OCR_PAGE_TIMEOUT_MS = 8000;
 
-function getMultiPageCaptureQuality(pageCount: number, profile: CaptureQualityProfile): number {
-  if (profile === 'max') {
-    if (pageCount >= 800) return 0.03;
-    if (pageCount >= 600) return 0.04;
-    if (pageCount >= 400) return 0.06;
-    if (pageCount >= 250) return 0.08;
-    if (pageCount >= 100) return 0.12;
-    if (pageCount >= 20) return 0.2;
-    if (pageCount >= 10) return 0.3;
-    return 0.45;
-  }
-  if (profile === 'fast') {
-    if (pageCount >= 800) return 0.015;
-    if (pageCount >= 600) return 0.02;
-    if (pageCount >= 400) return 0.03;
-    if (pageCount >= 250) return 0.05;
-    if (pageCount >= 100) return 0.07;
-    if (pageCount >= 20) return 0.1;
-    if (pageCount >= 10) return 0.16;
-    return 0.28;
-  }
+/** JPEG quality for multi-page Expo Camera captures — scales down with page count for stability (former “Balanced” preset). */
+function getMultiPageCaptureQuality(pageCount: number): number {
   if (pageCount >= 800) return 0.02;
   if (pageCount >= 600) return 0.03;
   if (pageCount >= 400) return 0.04;
@@ -111,6 +96,8 @@ export default function CaptureScreen() {
   const [activeTab, setActiveTab] = useState<'camera' | 'import'>(
     paramTab === 'import' ? 'import' : 'camera'
   );
+  /** Hub screen before camera/import; avoids auto-opening ML Kit until the user chooses a path. */
+  const [flowPhase, setFlowPhase] = useState<'chooser' | 'active'>('chooser');
   const [limitVisible, setLimitVisible] = useState(false);
   const [limitKind, setLimitKind] = useState<'documents'>('documents');
   const [paywallVisible, setPaywallVisible] = useState(false);
@@ -120,11 +107,20 @@ export default function CaptureScreen() {
   const [stressTargetPickerVisible, setStressTargetPickerVisible] = useState(false);
   const [multiPageDisclaimerVisible, setMultiPageDisclaimerVisible] = useState(false);
   const [multiPageDontShowAgain, setMultiPageDontShowAgain] = useState(false);
+  const [mlKitScannerWarningVisible, setMlKitScannerWarningVisible] = useState(false);
+  const [mlKitScannerDontShowAgain, setMlKitScannerDontShowAgain] = useState(false);
   const [pendingAfterUpgradeAction, setPendingAfterUpgradeAction] = useState<null | 'capture' | 'finishMultiPage'>(null);
   const [ocrOptionsVisible, setOcrOptionsVisible] = useState(false);
+  const [proMultiPagePitchVisible, setProMultiPagePitchVisible] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
   const finishingMultiPageRef = useRef(false);
   const captureStartedAtRef = useRef<number | null>(null);
+  /** When set, handleFinishMultiPageUnsafe builds PDF from these URIs (Android ML Kit) instead of multiPageImages. */
+  const mlKitPendingUrisRef = useRef<string[] | null>(null);
+
+  /** Android dev builds with ML Kit: skip Expo Camera preview and open the document scanner directly. */
+  const androidMlKitDirect =
+    Platform.OS === 'android' && isAndroidMlKitScannerPlatform();
 
   const isPro = useAppStore((s) => s.isPro);
   const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
@@ -136,10 +132,8 @@ export default function CaptureScreen() {
   const showToast = useAppStore((s) => s.showToast);
   const multiPageLimitDisclaimerDismissed = useAppStore((s) => s.multiPageLimitDisclaimerDismissed);
   const setMultiPageLimitDisclaimerDismissed = useAppStore((s) => s.setMultiPageLimitDisclaimerDismissed);
-  const captureQualityProfile = useAppStore((s) => s.captureQualityProfile);
-  const setCaptureQualityProfile = useAppStore((s) => s.setCaptureQualityProfile);
-  const pdfPagePlacementMode = useAppStore((s) => s.pdfPagePlacementMode);
-  const setPdfPagePlacementMode = useAppStore((s) => s.setPdfPagePlacementMode);
+  const mlKitMultiPageWarningDismissed = useAppStore((s) => s.mlKitMultiPageWarningDismissed);
+  const setMlKitMultiPageWarningDismissed = useAppStore((s) => s.setMlKitMultiPageWarningDismissed);
   const ocrProcessingMode = useAppStore((s) => s.ocrProcessingMode);
   const setOcrProcessingMode = useAppStore((s) => s.setOcrProcessingMode);
   const ocrLanguage = useAppStore((s) => s.ocrLanguage);
@@ -153,11 +147,20 @@ export default function CaptureScreen() {
     }, [loadSettings])
   );
 
+  useEffect(() => {
+    if (!isPro && multiPageMode) {
+      setMultiPageMode(false);
+      setMultiPageImages([]);
+    }
+  }, [isPro, multiPageMode]);
+
   const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed, firstLaunchAt);
   const headerTitle =
-    activeTab === 'camera' && !isPro
-      ? `Add Document (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left)`
-      : 'Add Document';
+    flowPhase === 'chooser'
+      ? 'Add document'
+      : activeTab === 'camera' && !isPro
+        ? `Add Document (${ocrReadsRemaining} free read${ocrReadsRemaining === 1 ? '' : 's'} left)`
+        : 'Add Document';
 
   // Prevent lock from showing when app goes to background while on this screen (e.g. picker or back).
   useEffect(() => {
@@ -168,10 +171,11 @@ export default function CaptureScreen() {
   }, []);
 
   useEffect(() => {
+    if (androidMlKitDirect) return;
     if (activeTab === 'camera' && !permission?.granted) {
       requestPermission();
     }
-  }, [activeTab, permission?.granted, requestPermission]);
+  }, [activeTab, permission?.granted, requestPermission, androidMlKitDirect]);
 
   useEffect(() => {
     if (!capturing) {
@@ -203,99 +207,6 @@ export default function CaptureScreen() {
     return true;
   };
 
-  const handleCapture = async () => {
-    if (capturing) return;
-
-    const useMlKit = isAndroidMlKitScannerPlatform();
-    if (!useMlKit && !cameraRef.current) {
-      return;
-    }
-
-    setPendingAfterUpgradeAction('capture');
-    if (!multiPageMode) {
-      if (!(await checkSlotLimit())) {
-        return;
-      }
-    } else {
-      const { isPro } = useAppStore.getState();
-      if (!isPro) {
-        const totalFiles = await getTotalFileCount();
-        if (totalFiles >= FREE_DOCUMENT_LIMIT) {
-          setLimitKind('documents');
-          setLimitVisible(true);
-          return;
-        }
-      }
-    }
-    setPendingAfterUpgradeAction(null);
-
-    if (useMlKit) {
-      const flowStartedAt = Date.now();
-      setCapturing(true);
-      try {
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        const scan = await launchVaultMlKitScan(multiPageMode);
-        if (!scan.ok) {
-          if (!scan.canceled && scan.message) {
-            Alert.alert('Document scan', scan.message);
-          }
-          return;
-        }
-        const { isPro } = useAppStore.getState();
-        if (multiPageMode && !isPro) {
-          const totalFiles = await getTotalFileCount();
-          const slotsLeft = Math.max(0, FREE_DOCUMENT_LIMIT - totalFiles);
-          if (scan.pageUris.length > slotsLeft) {
-            Alert.alert(
-              'Free plan limit',
-              `You can add ${slotsLeft} more document slot(s), but this scan has ${scan.pageUris.length} page(s). Remove pages in the scanner or upgrade to Pro.`
-            );
-            return;
-          }
-        }
-        const permanentUris: string[] = [];
-        for (const uri of scan.pageUris) {
-          permanentUris.push(await saveFileToArchive(uri));
-        }
-        if (multiPageMode) {
-          setMultiPageImages((prev) => [...prev, ...permanentUris]);
-          return;
-        }
-        void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
-        const permanentUri = permanentUris[0];
-        router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
-      } catch {
-        Alert.alert('Capture Failed', 'Could not complete the document scan. Please try again.');
-      } finally {
-        setCapturing(false);
-      }
-      return;
-    }
-
-    if (!cameraRef.current) return;
-    const flowStartedAt = Date.now();
-    setCapturing(true);
-    try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const captureQuality = multiPageMode
-        ? getMultiPageCaptureQuality(multiPageImages.length, captureQualityProfile)
-        : 0.9;
-      const photo = await cameraRef.current.takePictureAsync({ quality: captureQuality });
-      if (!photo?.uri) return;
-      if (multiPageMode) {
-        setMultiPageImages((prev) => [...prev, photo.uri]);
-        return;
-      }
-      const permanentUri = await saveFileToArchive(photo.uri);
-      void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
-      router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
-    } catch (error) {
-      Alert.alert('Capture Failed', 'Could not capture the photo. Please try again.');
-    } finally {
-      setCapturing(false);
-    }
-  };
-
   const handleFinishMultiPage = async () => {
     if (capturing) return;
     if (finishingMultiPageRef.current) {
@@ -309,19 +220,15 @@ export default function CaptureScreen() {
         [
           { text: 'Cancel', style: 'cancel' },
           {
-            text: 'Save first 300',
+            text: `Save first ${MULTI_PAGE_TESTED_LIMIT}`,
             onPress: () => {
-              const firstPart = multiPageImages.slice(0, 300);
+              const firstPart = multiPageImages.slice(0, MULTI_PAGE_TESTED_LIMIT);
               if (firstPart.length === 0) return;
               setMultiPageImages(firstPart);
-              showToast('Prepared first 300 pages. Tap Finish again to export safely.', 'info');
-            },
-          },
-          {
-            text: 'Switch to Fast',
-            onPress: () => {
-              void setCaptureQualityProfile('fast');
-              showToast('Capture profile switched to Fast for better stability.', 'info');
+              showToast(
+                `Prepared first ${MULTI_PAGE_TESTED_LIMIT} pages. Tap Finish again to export safely.`,
+                'info'
+              );
             },
           },
           {
@@ -346,10 +253,18 @@ export default function CaptureScreen() {
     if (finishingMultiPageRef.current) {
       return;
     }
-    if (multiPageImages.length === 0) return;
+    const fromMlKitFlow = mlKitPendingUrisRef.current != null;
+    const pageUris =
+      fromMlKitFlow && mlKitPendingUrisRef.current && mlKitPendingUrisRef.current.length > 0
+        ? mlKitPendingUrisRef.current
+        : multiPageImages;
+    if (pageUris.length === 0) return;
     finishingMultiPageRef.current = true;
     setPendingAfterUpgradeAction('finishMultiPage');
-    if (!(await checkSlotLimit())) return;
+    if (!(await checkSlotLimit())) {
+      finishingMultiPageRef.current = false;
+      return;
+    }
     setPendingAfterUpgradeAction(null);
     const flowStartedAt = Date.now();
     setCapturing(true);
@@ -359,11 +274,11 @@ export default function CaptureScreen() {
       // Multi-scan generates a PDF, but OCR must run against the original page images.
       let preExtractedOcrText: string | null = null;
       if (ocrExtractOnCapture) {
-        const pageResults: Array<string | null> = new Array(multiPageImages.length).fill(null);
+        const pageResults: Array<string | null> = new Array(pageUris.length).fill(null);
         const weakPageIndexes: number[] = [];
         // Extract sequentially for stability (native OCR is CPU/GPU heavy).
-        for (let pageIndex = 0; pageIndex < multiPageImages.length; pageIndex++) {
-          const pageUri = multiPageImages[pageIndex];
+        for (let pageIndex = 0; pageIndex < pageUris.length; pageIndex++) {
+          const pageUri = pageUris[pageIndex];
           const ocrPageStartedAt = Date.now();
           const result = await withTimeout(
             extractTextFromImageIfAvailable(pageUri, { mode: ocrProcessingMode, language: ocrLanguage }),
@@ -380,7 +295,7 @@ export default function CaptureScreen() {
               try {
                   await setOcrExtractOnCapture(false);
                   showToast(
-                    'Text extraction from photos needs a development build. Turn it on from Add → Camera after installing one.',
+                    'Text extraction from photos needs a development build. Turn it on from Add → Camera or Import (text from photo) after installing one.',
                     'info'
                   );
               } catch {
@@ -415,7 +330,7 @@ export default function CaptureScreen() {
         // Retry weak pages once with document mode for cleaner output.
         if (weakPageIndexes.length > 0) {
           for (const weakIndex of weakPageIndexes) {
-            const pageUri = multiPageImages[weakIndex];
+            const pageUri = pageUris[weakIndex];
             const retryStartedAt = Date.now();
             const retried = await withTimeout(
               extractTextFromImageIfAvailable(pageUri, { mode: 'document', language: ocrLanguage }),
@@ -476,7 +391,7 @@ export default function CaptureScreen() {
       };
 
       const pdfTempUri = await withTimeout(
-        createPdfFromImages(multiPageImages, updatePdfProgress, { pagePlacementMode: pdfPagePlacementMode }),
+        createPdfFromImages(pageUris, updatePdfProgress, { pagePlacementMode: DEFAULT_PDF_PAGE_PLACEMENT }),
         PDF_BUILD_TIMEOUT_MS,
         'PDF generation timed out'
       );
@@ -497,19 +412,20 @@ export default function CaptureScreen() {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isLikelyMemoryIssue = /OutOfMemoryError|memory|allocate|OOM/i.test(errorMessage);
       const isLikelyTimeout = /timed out/i.test(errorMessage);
-      const pageCount = multiPageImages.length;
+      const pageCount = pageUris.length;
+      const sectionHint = `${MULTI_PAGE_TESTED_LIMIT}-page`;
       const primaryMessage = isLikelyTimeout
-        ? 'PDF creation took too long on this device. Try 300-page sections for faster and safer results.'
-        : isLikelyMemoryIssue || pageCount > 500
-          ? 'This run is too large for your device memory. Try 300-page sections for better stability.'
+        ? `PDF creation took too long on this device. Try ${sectionHint} sections for faster and safer results.`
+        : isLikelyMemoryIssue || pageCount > MULTI_PAGE_TESTED_LIMIT
+          ? `This run is too large for your device memory. Try ${sectionHint} sections for better stability.`
           : 'Could not create the PDF. Please try again.';
 
       const saveSection = async (sectionSize: number) => {
         if (capturing) return;
-        if (multiPageImages.length === 0) return;
+        if (pageUris.length === 0) return;
         if (!(await checkSlotLimit())) return;
 
-        const currentPages = [...multiPageImages];
+        const currentPages = [...pageUris];
         const sectionPages = currentPages.slice(0, sectionSize);
         const remainingPages = currentPages.slice(sectionPages.length);
         if (sectionPages.length === 0) return;
@@ -534,14 +450,16 @@ export default function CaptureScreen() {
             }
             setLongOpPercent(99);
             setLongOpMessage('Finalizing PDF file');
-          }, { pagePlacementMode: pdfPagePlacementMode }), PDF_BUILD_TIMEOUT_MS, 'PDF generation timed out');
+          }, { pagePlacementMode: DEFAULT_PDF_PAGE_PLACEMENT }), PDF_BUILD_TIMEOUT_MS, 'PDF generation timed out');
           const pdfName = `scan_part_${Date.now()}.pdf`;
           const permanentUri = await saveFileToArchive(pdfTempUri, pdfName);
           void recordPerformanceMetric('scan_to_pdf', Date.now() - sectionFlowStartedAt);
 
           setPendingOcrText(null);
-          setMultiPageImages(remainingPages);
-          setMultiPageMode(remainingPages.length > 0);
+          if (!fromMlKitFlow) {
+            setMultiPageImages(remainingPages);
+            setMultiPageMode(remainingPages.length > 0);
+          }
           showToast(
             remainingPages.length > 0
               ? `Saved first ${sectionPages.length} pages. ${remainingPages.length} pages remain.`
@@ -560,10 +478,10 @@ export default function CaptureScreen() {
         { text: 'Retry', onPress: () => { void handleFinishMultiPage(); } },
       ];
 
-      if (pageCount > 300 || isLikelyMemoryIssue || isLikelyTimeout) {
+      if (pageCount > MULTI_PAGE_TESTED_LIMIT || isLikelyMemoryIssue || isLikelyTimeout) {
         actions.push({
-          text: 'Save First 300 Pages',
-          onPress: () => { void saveSection(300); },
+          text: `Save first ${MULTI_PAGE_TESTED_LIMIT} pages`,
+          onPress: () => { void saveSection(MULTI_PAGE_TESTED_LIMIT); },
         });
       }
 
@@ -575,8 +493,183 @@ export default function CaptureScreen() {
     }
   };
 
+  /** Avoid unhandled GO_BACK when capture is the only stack entry (e.g. cold open). */
+  const leaveCaptureScreen = useCallback(() => {
+    const can = router.canGoBack();
+    if (can) {
+      router.back();
+    } else {
+      router.replace('/(drawer)');
+    }
+  }, []);
+
+  const runAndroidMlKitDocumentScan = useCallback(
+    async (options?: { skipMlKitMultiPageWarning?: boolean }) => {
+    if (capturing) return;
+    if (
+      multiPageMode &&
+      !mlKitMultiPageWarningDismissed &&
+      !options?.skipMlKitMultiPageWarning
+    ) {
+      setMlKitScannerDontShowAgain(false);
+      setMlKitScannerWarningVisible(true);
+      return;
+    }
+    setPendingAfterUpgradeAction('capture');
+    if (!(await checkSlotLimit())) {
+      return;
+    }
+    setPendingAfterUpgradeAction(null);
+
+    const flowStartedAt = Date.now();
+    setCapturing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const scan = await launchVaultMlKitScan(multiPageMode);
+      if (!scan.ok) {
+        if (scan.canceled) {
+          leaveCaptureScreen();
+          return;
+        }
+        if (scan.message) {
+          Alert.alert('Document scan', scan.message);
+        }
+        return;
+      }
+
+      const permanentUris: string[] = [];
+      for (const uri of scan.pageUris) {
+        permanentUris.push(await saveFileToArchive(uri));
+      }
+
+      if (permanentUris.length === 1) {
+        void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
+        const permanentUri = permanentUris[0];
+        router.replace({
+          pathname: '/document/[id]',
+          params: { id: 'new', fileUri: permanentUri, fileType: 'image' },
+        });
+        return;
+      }
+
+      setCapturing(false);
+      mlKitPendingUrisRef.current = permanentUris;
+      try {
+        await handleFinishMultiPageUnsafe();
+      } finally {
+        mlKitPendingUrisRef.current = null;
+      }
+    } catch {
+      Alert.alert('Capture Failed', 'Could not complete the document scan. Please try again.');
+    } finally {
+      setCapturing(false);
+    }
+  },
+  [capturing, leaveCaptureScreen, mlKitMultiPageWarningDismissed, multiPageMode]
+);
+
+  const handleCapture = async () => {
+    if (capturing) return;
+
+    if (androidMlKitDirect) {
+      await runAndroidMlKitDocumentScan();
+      return;
+    }
+
+    if (!cameraRef.current) {
+      return;
+    }
+
+    setPendingAfterUpgradeAction('capture');
+    if (!multiPageMode) {
+      if (!(await checkSlotLimit())) {
+        return;
+      }
+    } else {
+      const { isPro } = useAppStore.getState();
+      if (!isPro) {
+        const totalFiles = await getTotalFileCount();
+        if (totalFiles >= FREE_DOCUMENT_LIMIT) {
+          setLimitKind('documents');
+          setLimitVisible(true);
+          return;
+        }
+      }
+    }
+    setPendingAfterUpgradeAction(null);
+
+    if (!cameraRef.current) return;
+    const flowStartedAt = Date.now();
+    setCapturing(true);
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const captureQuality = multiPageMode ? getMultiPageCaptureQuality(multiPageImages.length) : 0.9;
+      const photo = await cameraRef.current.takePictureAsync({ quality: captureQuality });
+      if (!photo?.uri) return;
+      if (multiPageMode) {
+        setMultiPageImages((prev) => [...prev, photo.uri]);
+        return;
+      }
+      const permanentUri = await saveFileToArchive(photo.uri);
+      void recordPerformanceMetric('scan_to_preview', Date.now() - flowStartedAt);
+      router.replace({ pathname: '/document/[id]', params: { id: 'new', fileUri: permanentUri, fileType: 'image' } });
+    } catch (error) {
+      Alert.alert('Capture Failed', 'Could not capture the photo. Please try again.');
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!androidMlKitDirect || activeTab !== 'camera' || flowPhase !== 'active') {
+        return () => {};
+      }
+      let cancelled = false;
+      const id = setTimeout(() => {
+        if (!cancelled) {
+          void runAndroidMlKitDocumentScan();
+        }
+      }, 0);
+      return () => {
+        cancelled = true;
+        clearTimeout(id);
+      };
+    }, [androidMlKitDirect, activeTab, flowPhase, runAndroidMlKitDocumentScan])
+  );
+
+  const toggleMultiPageMode = useCallback(() => {
+    if (!isPro) {
+      setProMultiPagePitchVisible(true);
+      return;
+    }
+    if (multiPageMode) {
+      setMultiPageMode(false);
+      setMultiPageImages([]);
+      return;
+    }
+    if (!multiPageLimitDisclaimerDismissed) {
+      setMultiPageDontShowAgain(false);
+      setMultiPageDisclaimerVisible(true);
+      return;
+    }
+    setMultiPageMode(true);
+  }, [isPro, multiPageMode, multiPageLimitDisclaimerDismissed]);
+
+  const beginActiveCameraFlow = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFlowPhase('active');
+    setActiveTab('camera');
+  }, []);
+
+  const beginActiveImportFlow = useCallback(async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setFlowPhase('active');
+    setActiveTab('import');
+  }, []);
+
   const handleAutoStressCapture = async (targetCount: number) => {
-    if (!cameraRef.current || capturing) return;
+    if (!isPro || !cameraRef.current || capturing) return;
     if (targetCount <= 0) return;
     try {
       const flowStartedAt = Date.now();
@@ -585,7 +678,7 @@ export default function CaptureScreen() {
       setMultiPageImages([]);
       const capturedUris: string[] = [];
       for (let index = 0; index < targetCount; index += 1) {
-        const captureQuality = getMultiPageCaptureQuality(index, captureQualityProfile);
+        const captureQuality = getMultiPageCaptureQuality(index);
         const photo = await cameraRef.current.takePictureAsync({ quality: captureQuality });
         if (!photo?.uri) {
           throw new Error(`Camera returned empty URI at index ${index}`);
@@ -763,41 +856,137 @@ export default function CaptureScreen() {
     <>
       <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={leaveCaptureScreen} style={styles.headerBtn} activeOpacity={0.7}>
           <Ionicons name="close" size={24} color={Colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{headerTitle}</Text>
         <View style={styles.headerBtn} />
       </View>
 
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'camera' && styles.tabActive]}
-          onPress={() => setActiveTab('camera')}
-          activeOpacity={0.7}
+      {flowPhase === 'chooser' ? (
+        <ScrollView
+          style={styles.chooserScroll}
+          contentContainerStyle={styles.chooserScrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
-          <Ionicons
-            name="camera-outline"
-            size={16}
-            color={activeTab === 'camera' ? Colors.primary : Colors.textSecondary}
-          />
-          <Text style={[styles.tabText, activeTab === 'camera' && styles.tabTextActive]}>Camera</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'import' && styles.tabActive]}
-          onPress={() => setActiveTab('import')}
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name="document-attach-outline"
-            size={16}
-            color={activeTab === 'import' ? Colors.primary : Colors.textSecondary}
-          />
-          <Text style={[styles.tabText, activeTab === 'import' && styles.tabTextActive]}>Import</Text>
-        </TouchableOpacity>
-      </View>
+          <Text style={styles.chooserHeadline}>Add a document</Text>
+          <Text style={styles.chooserLead}>
+            Choose how to capture or import. Turn on text extraction only when you need it; it uses your free OCR reads on the free plan.
+          </Text>
 
-      {activeTab === 'camera' ? (
+          <View style={styles.chooserChipRow}>
+            <TouchableOpacity
+              style={[styles.multiChip, ocrExtractActive && styles.multiChipActive]}
+              onPress={async () => {
+                await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                await setOcrExtractOnCapture(!ocrExtractActive);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="text-outline" size={16} color={ocrExtractActive ? Colors.primary : Colors.textSecondary} />
+              <Text style={[styles.multiChipText, ocrExtractActive && styles.multiChipTextActive]}>
+                Text from photo (OCR)
+              </Text>
+              {!isPro && (
+                <View style={styles.multiCount}>
+                  <Text style={styles.multiCountText}>{ocrReadsRemaining}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.multiChip} onPress={() => setOcrOptionsVisible(true)} activeOpacity={0.7}>
+              <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
+              <Text style={styles.multiChipText}>OCR options</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.multiChip, styles.chooserMultiRow, isPro && multiPageMode && styles.multiChipActive]}
+            onPress={toggleMultiPageMode}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name="document-outline"
+              size={16}
+              color={isPro && multiPageMode ? Colors.primary : Colors.textSecondary}
+            />
+            <Text
+              style={[styles.multiChipText, isPro && multiPageMode && styles.multiChipTextActive]}
+            >
+              Multi-page PDF
+            </Text>
+            {!isPro ? (
+              <View style={styles.multiCount}>
+                <Text style={styles.multiCountText}>Pro</Text>
+              </View>
+            ) : null}
+            {isPro && multiPageMode ? (
+              <View style={styles.multiCount}>
+                <Text style={styles.multiCountText}>{multiPageImages.length}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.chooserPrimaryCard} onPress={beginActiveCameraFlow} activeOpacity={0.75}>
+            <View style={styles.chooserPrimaryIcon}>
+              <Ionicons name="camera-outline" size={28} color={Colors.primary} />
+            </View>
+            <View style={styles.chooserPrimaryText}>
+              <Text style={styles.chooserPrimaryTitle}>Scan with camera</Text>
+              <Text style={styles.chooserPrimarySubtitle}>
+                {androidMlKitDirect
+                  ? 'Opens Google’s document scanner (crop, filters, multi-page when enabled above).'
+                  : 'Use the camera to capture a page or multi-page set.'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.chooserPrimaryCard} onPress={beginActiveImportFlow} activeOpacity={0.75}>
+            <View style={[styles.chooserPrimaryIcon, styles.chooserPrimaryIconAlt]}>
+              <Ionicons name="folder-open-outline" size={28} color={Colors.primary} />
+            </View>
+            <View style={styles.chooserPrimaryText}>
+              <Text style={styles.chooserPrimaryTitle}>Import</Text>
+              <Text style={styles.chooserPrimarySubtitle}>
+                {androidMlKitDirect
+                  ? 'Vault’s import picker first. You can open Google’s document scanner from the Import tab only if you want to crop there.'
+                  : 'Photos, PDF, Word, Excel, and other files from your device.'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+          </TouchableOpacity>
+        </ScrollView>
+      ) : (
+        <>
+          <View style={styles.tabs}>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'camera' && styles.tabActive]}
+              onPress={() => setActiveTab('camera')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="camera-outline"
+                size={16}
+                color={activeTab === 'camera' ? Colors.primary : Colors.textSecondary}
+              />
+              <Text style={[styles.tabText, activeTab === 'camera' && styles.tabTextActive]}>Camera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tab, activeTab === 'import' && styles.tabActive]}
+              onPress={() => setActiveTab('import')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="document-attach-outline"
+                size={16}
+                color={activeTab === 'import' ? Colors.primary : Colors.textSecondary}
+              />
+              <Text style={[styles.tabText, activeTab === 'import' && styles.tabTextActive]}>Import</Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeTab === 'camera' ? (
         <CameraTab
           permission={permission}
           requestPermission={requestPermission}
@@ -818,55 +1007,38 @@ export default function CaptureScreen() {
           isPro={isPro}
           multiPageMode={multiPageMode}
           pageCount={multiPageImages.length}
-          onToggleMultiPage={() => {
-            const { isPro } = useAppStore.getState();
-            if (!isPro) {
-              setPaywallVisible(true);
-              return;
-            }
-            if (multiPageMode) {
-              setMultiPageMode(false);
-              setMultiPageImages([]);
-              return;
-            }
-            if (!multiPageLimitDisclaimerDismissed) {
-              setMultiPageDontShowAgain(false);
-              setMultiPageDisclaimerVisible(true);
-              return;
-            }
-            setMultiPageMode(true);
-          }}
+          onToggleMultiPage={toggleMultiPageMode}
           onFinishMultiPage={handleFinishMultiPage}
           onAutoStressCapture={() => {
             setStressTargetPickerVisible(true);
           }}
-          captureQualityProfile={captureQualityProfile}
-          onChangeCaptureQualityProfile={async (profile) => {
-            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            await setCaptureQualityProfile(profile);
-          }}
-          pdfPagePlacementMode={pdfPagePlacementMode}
-          onChangePdfPagePlacementMode={async (mode) => {
-            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            await setPdfPagePlacementMode(mode);
+          mlKitDirectPlaceholder={androidMlKitDirect}
+          onRetryMlKit={() => {
+            void runAndroidMlKitDocumentScan();
           }}
         />
-      ) : (
-        <ImportTab
-          ocrExtractOnCapture={ocrExtractActive}
-          onToggleOcrExtract={async () => {
-            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            await setOcrExtractOnCapture(!ocrExtractActive);
-          }}
-          onOpenOcrOptions={() => setOcrOptionsVisible(true)}
-          ocrReadsRemaining={ocrReadsRemaining}
-          isPro={isPro}
-          onImportImage={handleImportImage}
-          onImportPdf={handleImportPdf}
-          onImportWord={handleImportWord}
-          onImportExcel={handleImportExcel}
-          onImportOther={handleImportOther}
-        />
+          ) : (
+            <ImportTab
+              ocrExtractOnCapture={ocrExtractActive}
+              onToggleOcrExtract={async () => {
+                await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                await setOcrExtractOnCapture(!ocrExtractActive);
+              }}
+              onOpenOcrOptions={() => setOcrOptionsVisible(true)}
+              ocrReadsRemaining={ocrReadsRemaining}
+              isPro={isPro}
+              mlKitScannerOptional={androidMlKitDirect}
+              onOpenMlKitDocumentScanner={() => {
+                void runAndroidMlKitDocumentScan();
+              }}
+              onImportImage={handleImportImage}
+              onImportPdf={handleImportPdf}
+              onImportWord={handleImportWord}
+              onImportExcel={handleImportExcel}
+              onImportOther={handleImportOther}
+            />
+          )}
+        </>
       )}
     </SafeAreaView>
       <LimitReachedDialog
@@ -878,7 +1050,11 @@ export default function CaptureScreen() {
           const actionToRetry = pendingAfterUpgradeAction;
           setPendingAfterUpgradeAction(null);
           if (actionToRetry === 'capture') {
-            await handleCapture();
+            if (androidMlKitDirect) {
+              await runAndroidMlKitDocumentScan();
+            } else {
+              await handleCapture();
+            }
           } else if (actionToRetry === 'finishMultiPage') {
             await handleFinishMultiPage();
           }
@@ -895,6 +1071,15 @@ export default function CaptureScreen() {
         onRestore={() => {
           useAppStore.getState().setIsPro(true);
           setPaywallVisible(false);
+        }}
+      />
+      <ProIncludedFeatureDialog
+        visible={proMultiPagePitchVisible}
+        onClose={() => setProMultiPagePitchVisible(false)}
+        featureDescription="Combine several scans into a single multi-page PDF. Unlock Pro to use this feature."
+        onUpgrade={async () => {
+          await useAppStore.getState().setIsPro(true);
+          setProMultiPagePitchVisible(false);
         }}
       />
       <Modal visible={showLongOpOverlay} transparent animationType="fade">
@@ -926,7 +1111,7 @@ export default function CaptureScreen() {
           >
             <Text style={styles.stressPickerTitle}>Auto Stress Test</Text>
             <Text style={styles.stressPickerHint}>Choose target capture count</Text>
-            {[200, 300, 500, 1000].map((target) => (
+            {[50, 100, 150].map((target) => (
               <TouchableOpacity
                 key={target}
                 style={styles.stressPickerBtn}
@@ -961,14 +1146,14 @@ export default function CaptureScreen() {
           onPress={() => setOcrOptionsVisible(false)}
         >
           <TouchableOpacity
-            style={styles.stressPickerCard}
+            style={[styles.stressPickerCard, styles.ocrOptionsCard]}
             activeOpacity={1}
             onPress={(e) => e.stopPropagation()}
           >
             <Text style={styles.stressPickerTitle}>OCR options</Text>
             <Text style={styles.stressPickerHint}>Tune OCR behavior for clearer extraction.</Text>
             <Text style={styles.ocrOptionLabel}>Mode</Text>
-            <View style={styles.profileRow}>
+            <View style={styles.ocrLangRow}>
               {(['auto', 'document', 'receipt', 'handwritten'] as const).map((mode) => {
                 const active = ocrProcessingMode === mode;
                 const label =
@@ -988,24 +1173,44 @@ export default function CaptureScreen() {
               })}
             </View>
             <Text style={styles.ocrOptionLabel}>Language</Text>
-            <View style={styles.profileRow}>
-              {(['auto', 'en', 'tr'] as const).map((lang) => {
-                const active = ocrLanguage === lang;
-                const label = lang === 'auto' ? 'Auto' : lang.toUpperCase();
-                return (
-                  <TouchableOpacity
-                    key={lang}
-                    style={[styles.profileChip, active && styles.profileChipActive]}
-                    onPress={async () => {
-                      await setOcrLanguage(lang as OcrLanguage);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>{label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+            <ScrollView
+              style={styles.ocrOptionsScroll}
+              contentContainerStyle={styles.ocrOptionsScrollContent}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {OCR_LANGUAGE_CATEGORIES.map((category, catIdx) => (
+                <View key={category.title} style={styles.ocrLangCategory}>
+                  <Text style={[styles.ocrCategoryTitle, catIdx === 0 && styles.ocrCategoryTitleFirst]}>
+                    {category.title}
+                  </Text>
+                  <View style={styles.ocrLangRow}>
+                    {category.codes.map((code) => {
+                      const active = ocrLanguage === code;
+                      return (
+                        <TouchableOpacity
+                          key={code}
+                          style={[styles.profileChip, active && styles.profileChipActive]}
+                          onPress={async () => {
+                            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            await setOcrLanguage(code);
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Text
+                            style={[styles.profileChipText, active && styles.profileChipTextActive]}
+                            numberOfLines={2}
+                          >
+                            {getOcrLanguageLabel(code)}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
             <TouchableOpacity
               style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
               activeOpacity={0.8}
@@ -1072,6 +1277,62 @@ export default function CaptureScreen() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+      <Modal
+        visible={mlKitScannerWarningVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMlKitScannerWarningVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.stressPickerOverlay}
+          activeOpacity={1}
+          onPress={() => setMlKitScannerWarningVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.stressPickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.stressPickerTitle}>Document scanner</Text>
+            <Text style={styles.stressPickerHint}>
+              Google&apos;s multi-page scanner allows a maximum of {MULTI_PAGE_TESTED_LIMIT} pages per session. For longer
+              documents, finish one scan and start another.
+            </Text>
+            <TouchableOpacity
+              style={styles.disclaimerCheckRow}
+              activeOpacity={0.8}
+              onPress={() => setMlKitScannerDontShowAgain((v) => !v)}
+            >
+              <Ionicons
+                name={mlKitScannerDontShowAgain ? 'checkbox-outline' : 'square-outline'}
+                size={20}
+                color={Colors.primary}
+              />
+              <Text style={styles.disclaimerCheckText}>Do not show this again</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.stressPickerBtn}
+              activeOpacity={0.8}
+              onPress={async () => {
+                if (mlKitScannerDontShowAgain) {
+                  await setMlKitMultiPageWarningDismissed(true);
+                }
+                setMlKitScannerWarningVisible(false);
+                void runAndroidMlKitDocumentScan({ skipMlKitMultiPageWarning: true });
+              }}
+            >
+              <Text style={styles.stressPickerBtnText}>Continue</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setMlKitScannerWarningVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </>
   );
 }
@@ -1096,10 +1357,9 @@ type CameraTabProps = {
   onToggleMultiPage: () => void;
   onFinishMultiPage: () => void;
   onAutoStressCapture: () => void;
-  captureQualityProfile: CaptureQualityProfile;
-  onChangeCaptureQualityProfile: (profile: CaptureQualityProfile) => void | Promise<void>;
-  pdfPagePlacementMode: PdfPagePlacementMode;
-  onChangePdfPagePlacementMode: (mode: PdfPagePlacementMode) => void | Promise<void>;
+  /** Android + ML Kit: no Expo Camera preview; scanner opens from the screen focus. */
+  mlKitDirectPlaceholder?: boolean;
+  onRetryMlKit?: () => void;
 };
 
 function CameraTab({
@@ -1122,12 +1382,34 @@ function CameraTab({
   onToggleMultiPage,
   onFinishMultiPage,
   onAutoStressCapture,
-  captureQualityProfile,
-  onChangeCaptureQualityProfile,
-  pdfPagePlacementMode,
-  onChangePdfPagePlacementMode,
+  mlKitDirectPlaceholder,
+  onRetryMlKit,
 }: CameraTabProps) {
-  const [pdfOptionsVisible, setPdfOptionsVisible] = useState(false);
+  if (mlKitDirectPlaceholder) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <Text style={styles.permissionTitle}>Document scanner</Text>
+        <Text style={styles.permissionSubtitle}>
+          Google&apos;s scanner opens automatically. One page saves as an image; multiple pages are merged into one PDF
+          with a fixed layout tuned for clarity and stability.
+        </Text>
+        <TouchableOpacity
+          style={styles.permissionBtn}
+          onPress={() => onRetryMlKit?.()}
+          activeOpacity={0.8}
+          disabled={capturing}
+        >
+          <Text style={styles.permissionBtnText}>{capturing ? 'Working…' : 'Scan again'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.multiChip} onPress={onOpenOcrOptions} activeOpacity={0.7}>
+          <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.multiChipText}>OCR options</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   if (!permission) {
     return (
       <View style={styles.centerContainer}>
@@ -1189,33 +1471,31 @@ function CameraTab({
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.multiChip, multiPageMode && styles.multiChipActive]}
+          style={[styles.multiChip, isPro && multiPageMode && styles.multiChipActive]}
           onPress={onToggleMultiPage}
           activeOpacity={0.7}
         >
-          <Ionicons name="document-outline" size={16} color={multiPageMode ? Colors.primary : Colors.textSecondary} />
-          <Text style={[styles.multiChipText, multiPageMode && styles.multiChipTextActive]}>
+          <Ionicons
+            name="document-outline"
+            size={16}
+            color={isPro && multiPageMode ? Colors.primary : Colors.textSecondary}
+          />
+          <Text style={[styles.multiChipText, isPro && multiPageMode && styles.multiChipTextActive]}>
             Multi-page PDF
           </Text>
-          {multiPageMode && (
+          {!isPro ? (
+            <View style={styles.multiCount}>
+              <Text style={styles.multiCountText}>Pro</Text>
+            </View>
+          ) : null}
+          {isPro && multiPageMode ? (
             <View style={styles.multiCount}>
               <Text style={styles.multiCountText}>{pageCount}</Text>
             </View>
-          )}
+          ) : null}
         </TouchableOpacity>
 
-        {multiPageMode && (
-          <TouchableOpacity
-            style={styles.multiChip}
-            onPress={() => setPdfOptionsVisible(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="options-outline" size={16} color={Colors.textSecondary} />
-            <Text style={styles.multiChipText}>PDF options</Text>
-          </TouchableOpacity>
-        )}
-
-        {multiPageMode && (
+        {isPro && multiPageMode && (
           <TouchableOpacity
             style={[styles.multiFinishBtn, pageCount === 0 && styles.multiFinishBtnDisabled]}
             onPress={onFinishMultiPage}
@@ -1225,12 +1505,7 @@ function CameraTab({
             <Text style={styles.multiFinishText}>Finish</Text>
           </TouchableOpacity>
         )}
-        {isAndroidMlKitScannerPlatform() && (
-          <Text style={styles.mlKitHint}>
-            Shutter opens the Google document scanner (auto crop, filters, multi-page).
-          </Text>
-        )}
-        {__DEV__ && multiPageMode && (
+        {__DEV__ && isPro && multiPageMode && (
           <TouchableOpacity
             style={styles.multiStressBtn}
             onPress={onAutoStressCapture}
@@ -1271,70 +1546,8 @@ function CameraTab({
 
       <Text style={styles.cameraHint}>
         Position the document within the frame. Turn on &quot;Text from photo&quot; only when you want on-device text
-        extraction (search in Settings is separate).
+        extraction (uses your free OCR reads on the Free plan).
       </Text>
-
-      <Modal visible={pdfOptionsVisible} transparent animationType="fade" onRequestClose={() => setPdfOptionsVisible(false)}>
-        <TouchableOpacity style={styles.stressPickerOverlay} activeOpacity={1} onPress={() => setPdfOptionsVisible(false)}>
-          <TouchableOpacity style={styles.stressPickerCard} activeOpacity={1} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.stressPickerTitle}>Multi-page PDF options</Text>
-            <Text style={styles.stressPickerHint}>
-              These affect only multi-page export quality and page placement.
-            </Text>
-            <View style={styles.profileRow}>
-              {(['fast', 'balanced', 'max'] as const).map((profile) => {
-                const active = captureQualityProfile === profile;
-                const label = profile === 'fast' ? 'Fast' : profile === 'balanced' ? 'Balanced' : 'Max';
-                return (
-                  <TouchableOpacity
-                    key={profile}
-                    style={[styles.profileChip, active && styles.profileChipActive]}
-                    onPress={() => onChangeCaptureQualityProfile(profile)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>{label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <View style={styles.profileRow}>
-              {(['fill', 'fit'] as const).map((mode) => {
-                const active = pdfPagePlacementMode === mode;
-                return (
-                  <TouchableOpacity
-                    key={mode}
-                    style={[styles.profileChip, active && styles.profileChipActive]}
-                    onPress={() => onChangePdfPagePlacementMode(mode)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.profileChipText, active && styles.profileChipTextActive]}>
-                      {mode === 'fill' ? 'Fill page' : 'Fit page'}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <Text style={styles.profileHint}>
-              {captureQualityProfile === 'fast'
-                ? 'Fast: smaller files, quickest export, lower detail.'
-                : captureQualityProfile === 'max'
-                  ? 'Max: best detail, larger files, slower export.'
-                  : 'Balanced: recommended quality/speed mix.'}
-              {'  '}
-              {pdfPagePlacementMode === 'fill'
-                ? 'Fill page: fewer side borders, may crop edges.'
-                : 'Fit page: no crop, may show thin side borders.'}
-            </Text>
-            <TouchableOpacity
-              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
-              activeOpacity={0.8}
-              onPress={() => setPdfOptionsVisible(false)}
-            >
-              <Text style={styles.stressPickerCancelText}>Done</Text>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
     </View>
   );
 }
@@ -1345,6 +1558,9 @@ type ImportTabProps = {
   onOpenOcrOptions: () => void;
   ocrReadsRemaining: number;
   isPro: boolean;
+  /** Android + ML Kit: show optional card to open Google’s scanner (never auto). */
+  mlKitScannerOptional?: boolean;
+  onOpenMlKitDocumentScanner?: () => void;
   onImportImage: () => void;
   onImportPdf: () => void;
   onImportWord: () => void;
@@ -1358,6 +1574,8 @@ function ImportTab({
   onOpenOcrOptions,
   ocrReadsRemaining,
   isPro,
+  mlKitScannerOptional,
+  onOpenMlKitDocumentScanner,
   onImportImage,
   onImportPdf,
   onImportWord,
@@ -1375,6 +1593,26 @@ function ImportTab({
       <Text style={styles.importSubtitle}>
         Select a photo, document, or file from your device storage.
       </Text>
+
+      {mlKitScannerOptional && onOpenMlKitDocumentScanner ? (
+        <TouchableOpacity
+          style={[styles.importCard, styles.importMlKitOptionalCard]}
+          onPress={onOpenMlKitDocumentScanner}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.importIcon, styles.importMlKitOptionalIcon]}>
+            <Ionicons name="scan-outline" size={32} color={Colors.primary} />
+          </View>
+          <View style={styles.importCardText}>
+            <Text style={styles.importCardTitle}>Google document scanner (optional)</Text>
+            <Text style={styles.importCardSubtitle}>
+              Only if you want to crop or straighten using Google’s tool. Otherwise use the options below — Vault does not
+              open this automatically.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+        </TouchableOpacity>
+      ) : null}
 
       <View style={styles.importOcrRow}>
         <TouchableOpacity
@@ -1513,6 +1751,70 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: Colors.primary,
   },
+  chooserScroll: {
+    flex: 1,
+  },
+  chooserScrollContent: {
+    paddingHorizontal: Spacing.base,
+    paddingBottom: Spacing.xl,
+    paddingTop: Spacing.sm,
+    gap: Spacing.md,
+  },
+  chooserHeadline: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeLg,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  chooserLead: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeBase,
+    lineHeight: Typography.lineHeightBase,
+    marginBottom: Spacing.xs,
+  },
+  chooserChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    alignItems: 'center',
+  },
+  chooserMultiRow: {
+    alignSelf: 'flex-start',
+  },
+  chooserPrimaryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  chooserPrimaryIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chooserPrimaryIconAlt: {
+    backgroundColor: 'rgba(16, 163, 127, 0.08)',
+  },
+  chooserPrimaryText: {
+    flex: 1,
+    gap: 4,
+  },
+  chooserPrimaryTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  chooserPrimarySubtitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
+  },
   centerContainer: {
     flex: 1,
     alignItems: 'center',
@@ -1609,15 +1911,6 @@ const styles = StyleSheet.create({
   multiChipTextActive: {
     color: Colors.primary,
   },
-  mlKitHint: {
-    width: '100%',
-    paddingHorizontal: Spacing.sm,
-    marginTop: Spacing.xs,
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    lineHeight: 16,
-    textAlign: 'center',
-  },
   multiCount: {
     marginLeft: Spacing.xs,
     minWidth: 20,
@@ -1658,12 +1951,6 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightSemibold,
   },
-  profileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginLeft: 'auto',
-  },
   profileChip: {
     borderRadius: Radius.pill,
     borderWidth: 1,
@@ -1684,12 +1971,39 @@ const styles = StyleSheet.create({
   profileChipTextActive: {
     color: Colors.primary,
   },
-  profileHint: {
+  ocrOptionsCard: {
+    maxWidth: 400,
     width: '100%',
+    maxHeight: '88%',
+    alignItems: 'stretch',
+  },
+  ocrOptionsScroll: {
+    maxHeight: 360,
+    width: '100%',
+  },
+  ocrOptionsScrollContent: {
+    paddingBottom: Spacing.sm,
+  },
+  ocrLangCategory: {
+    width: '100%',
+  },
+  ocrCategoryTitle: {
     color: Colors.textMuted,
     fontSize: Typography.fontSizeXs,
-    lineHeight: 16,
-    marginTop: 2,
+    fontWeight: Typography.fontWeightSemibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+  },
+  ocrCategoryTitleFirst: {
+    marginTop: 0,
+  },
+  ocrLangRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    width: '100%',
   },
   ocrOptionLabel: {
     color: Colors.textSecondary,
@@ -1858,6 +2172,14 @@ const styles = StyleSheet.create({
     padding: Spacing.base,
     marginBottom: Spacing.md,
     gap: Spacing.base,
+  },
+  importMlKitOptionalCard: {
+    borderStyle: 'dashed',
+    borderColor: 'rgba(16, 163, 127, 0.45)',
+    marginBottom: Spacing.lg,
+  },
+  importMlKitOptionalIcon: {
+    backgroundColor: 'rgba(16, 163, 127, 0.14)',
   },
   importIcon: {
     width: 60,

@@ -30,6 +30,7 @@ import { UseAiWorkflowSheet } from '@/components/ui';
 import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { PREVIEW_COPY } from '@/constants/previewCopy';
 import { getOcrReadTrialsRemaining } from '@/services/limits';
 import type { Category, FileType, Tag } from '@/db/types';
 
@@ -316,6 +317,20 @@ export default function DocumentEditorScreen() {
     [ocrCurrentPageIdx, ocrMatchPageIndexes]
   );
 
+  /** New docs often open via router.replace (e.g. from capture); GO_BACK then has no handler. */
+  const leaveDocumentEditor = useCallback(() => {
+    if (isNew) {
+      router.replace('/(drawer)');
+      return;
+    }
+    const can = router.canGoBack();
+    if (can) {
+      router.back();
+    } else {
+      router.replace('/(drawer)');
+    }
+  }, [isNew]);
+
   const handleSave = async () => {
     if (!title.trim()) {
       Alert.alert('Title Required', 'Please enter a title for this document.');
@@ -369,7 +384,7 @@ export default function DocumentEditorScreen() {
         await editDocument(Number(id), title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.back();
+      leaveDocumentEditor();
     } finally {
       setSaving(false);
       setBusyText(null);
@@ -409,7 +424,7 @@ export default function DocumentEditorScreen() {
               await removeDocument(Number(id));
               await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               showToast('Document deleted', 'success');
-              router.back();
+              leaveDocumentEditor();
             } catch {
               Alert.alert('Error', 'Could not delete the document.');
             }
@@ -472,7 +487,7 @@ export default function DocumentEditorScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} activeOpacity={0.7}>
+          <TouchableOpacity onPress={leaveDocumentEditor} style={styles.headerBtn} activeOpacity={0.7}>
             <Ionicons name="chevron-down" size={24} color={Colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle} numberOfLines={1} ellipsizeMode="tail">
@@ -534,8 +549,29 @@ export default function DocumentEditorScreen() {
                 if (fileType === 'pdf' && fileUri) {
                   router.push({ pathname: '/pdf-viewer', params: { uri: fileUri, title } });
                 }
+                if (
+                  (fileType === 'word' || fileType === 'excel' || fileType === 'document') &&
+                  fileUri
+                ) {
+                  router.push({
+                    pathname: '/file-preview',
+                    params: {
+                      uri: encodeURIComponent(fileUri),
+                      title: title.trim() || 'Preview',
+                      fileType,
+                    },
+                  });
+                }
               }}
-              activeOpacity={fileType === 'image' || fileType === 'pdf' ? 0.8 : 1}
+              activeOpacity={
+                fileType === 'image' ||
+                fileType === 'pdf' ||
+                fileType === 'word' ||
+                fileType === 'excel' ||
+                fileType === 'document'
+                  ? 0.8
+                  : 1
+              }
             >
               {fileType === 'image' ? (
                 <Image
@@ -576,8 +612,10 @@ export default function DocumentEditorScreen() {
                   </Text>
                   <Text style={styles.pdfPreviewHint}>
                     {fileType === 'pdf'
-                      ? 'Tap to view'
-                      : 'Use Open with… in the toolbar to view in another app'}
+                      ? PREVIEW_COPY.documentCardHintPdf
+                      : fileType === 'word' || fileType === 'excel' || fileType === 'document'
+                        ? PREVIEW_COPY.documentCardHintOffice
+                        : PREVIEW_COPY.documentCardHintOther}
                   </Text>
                 </View>
               )}

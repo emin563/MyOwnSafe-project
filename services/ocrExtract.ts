@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import type { OcrLanguageCode } from '@/services/ocrLanguages';
 
 export type OcrExtractResult =
   | { text: string | null; ok: true }
@@ -7,7 +8,7 @@ export type OcrExtractResult =
 
 type OcrOptions = {
   mode?: 'auto' | 'document' | 'receipt' | 'handwritten';
-  language?: 'auto' | 'en' | 'tr';
+  language?: OcrLanguageCode;
 };
 
 function normalizeExtractedText(raw: string, mode: OcrOptions['mode']): string {

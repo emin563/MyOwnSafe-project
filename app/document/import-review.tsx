@@ -11,12 +11,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import type { FileType } from '@/db/types';
 import { useAppStore } from '@/store/app-store';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { LimitReachedDialog } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { FileType } from '@/db/types';
+import { PREVIEW_COPY } from '@/constants/previewCopy';
 
 export default function ImportReviewScreen() {
   const {
@@ -126,6 +127,25 @@ export default function ImportReviewScreen() {
             ? 'grid-outline'
             : 'document-attach-outline';
 
+  const canPreviewImport = (t: FileType) =>
+    t === 'pdf' || t === 'image' || t === 'word' || t === 'excel' || t === 'document';
+
+  const openImportPreview = (item: (typeof pendingBulkImports)[number], idx: number) => {
+    const label = item.name?.trim() ? item.name.trim() : `File ${idx + 1}`;
+    if (item.fileType === 'pdf') {
+      router.push({ pathname: '/pdf-viewer', params: { uri: item.fileUri, title: label } });
+      return;
+    }
+    router.push({
+      pathname: '/file-preview',
+      params: {
+        uri: encodeURIComponent(item.fileUri),
+        title: label,
+        fileType: item.fileType,
+      },
+    });
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
       <View style={styles.header}>
@@ -148,9 +168,16 @@ export default function ImportReviewScreen() {
         </View>
 
         <Text style={styles.sectionLabel}>Selected files</Text>
+        <Text style={styles.filesHint}>{PREVIEW_COPY.importHint}</Text>
         <View style={styles.filesCard}>
           {pendingBulkImports.map((item, idx) => (
-            <View key={`${item.fileUri}-${idx}`} style={styles.fileRow}>
+            <TouchableOpacity
+              key={`${item.fileUri}-${idx}`}
+              style={styles.fileRow}
+              onPress={() => canPreviewImport(item.fileType) && openImportPreview(item, idx)}
+              activeOpacity={canPreviewImport(item.fileType) ? 0.75 : 1}
+              disabled={!canPreviewImport(item.fileType)}
+            >
               <View style={styles.fileIcon}>
                 <Ionicons name={getTypeIcon(item.fileType) as any} size={18} color={Colors.textSecondary} />
               </View>
@@ -160,9 +187,13 @@ export default function ImportReviewScreen() {
                 </Text>
                 <Text style={styles.fileMeta}>
                   {getTypeLabel(item.fileType)}
+                  {canPreviewImport(item.fileType) ? ' · In-app preview' : ''}
                 </Text>
               </View>
-            </View>
+              {canPreviewImport(item.fileType) ? (
+                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+              ) : null}
+            </TouchableOpacity>
           ))}
         </View>
 
@@ -306,6 +337,12 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
     fontWeight: Typography.fontWeightMedium,
+    marginBottom: Spacing.sm,
+  },
+  filesHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
     marginBottom: Spacing.sm,
   },
   filesCard: {

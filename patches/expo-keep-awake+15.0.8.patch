@@ -22,3 +22,26 @@ index b7a856e..4e76846 100644
      return () => {
        isMounted = false;
        if (options?.suppressDeactivateWarnings) {
+diff --git a/node_modules/expo-keep-awake/tsconfig.json b/node_modules/expo-keep-awake/tsconfig.json
+index ae1ae0d..a246fd2 100644
+--- a/node_modules/expo-keep-awake/tsconfig.json
++++ b/node_modules/expo-keep-awake/tsconfig.json
+@@ -1,8 +1,15 @@
+ {
+-  "extends": "expo-module-scripts/tsconfig.base",
+   "compilerOptions": {
+-    "outDir": "./build",
+-    "emitDeclarationOnly": true
++    "target": "ESNext",
++    "module": "preserve",
++    "moduleResolution": "bundler",
++    "strict": true,
++    "skipLibCheck": true,
++    "noEmit": true,
++    "jsx": "react-native",
++    "allowJs": true,
++    "esModuleInterop": true,
++    "resolveJsonModule": true
+   },
+   "include": ["./src"],
+   "exclude": ["**/__mocks__/*", "**/__tests__/*", "**/__rsc_tests__/*"]
