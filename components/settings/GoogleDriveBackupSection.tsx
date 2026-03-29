@@ -2,7 +2,15 @@ import { isGoogleDriveOAuthConfigured } from '@/config/googleDrive';
 import { Colors, Spacing } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
 import React, { lazy, Suspense } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { GoogleDriveLinkStatusRow } from './GoogleDriveLinkStatusRow';
 import { googleDriveBackupStyles as styles } from './googleDriveBackup.styles';
 
 const GoogleDriveOAuthPanel = lazy(() => import('./GoogleDriveOAuthPanel'));
@@ -26,25 +34,57 @@ function GoogleDriveNotConfigured() {
   );
 }
 
-export function GoogleDriveBackupSection() {
+function GoogleDriveProTeaser({ onRequestPro }: { onRequestPro: () => void }) {
+  return (
+    <TouchableOpacity
+      style={[styles.row, styles.rowBtn]}
+      onPress={onRequestPro}
+      activeOpacity={0.7}
+    >
+      <View style={styles.rowIcon}>
+        <Ionicons name="logo-google" size={20} color={Colors.primary} />
+      </View>
+      <View style={styles.rowContent}>
+        <Text style={styles.rowLabel}>Google Drive backup (Pro)</Text>
+        <Text style={styles.rowHint}>
+          Pro: link your Google account and auto-upload saved documents and backup zips to a Vault folder (Android).
+          One-time purchase unlocks this with full backup, bulk tools, and more.
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+    </TouchableOpacity>
+  );
+}
+
+type Props = {
+  isPro: boolean;
+  onRequestPro: () => void;
+};
+
+export function GoogleDriveBackupSection({ isPro, onRequestPro }: Props) {
   if (Platform.OS !== 'android') {
     return null;
   }
   return (
     <>
       <View style={sectionStyles.topDivider} />
-      {!isGoogleDriveOAuthConfigured() ? (
+      {!isPro ? (
+        <GoogleDriveProTeaser onRequestPro={onRequestPro} />
+      ) : !isGoogleDriveOAuthConfigured() ? (
         <GoogleDriveNotConfigured />
       ) : (
-        <Suspense
-          fallback={
-            <View style={styles.row}>
-              <ActivityIndicator color={Colors.primary} size="small" />
-            </View>
-          }
-        >
-          <GoogleDriveOAuthPanel />
-        </Suspense>
+        <>
+          <GoogleDriveLinkStatusRow />
+          <Suspense
+            fallback={
+              <View style={styles.row}>
+                <ActivityIndicator color={Colors.primary} size="small" />
+              </View>
+            }
+          >
+            <GoogleDriveOAuthPanel />
+          </Suspense>
+        </>
       )}
     </>
   );

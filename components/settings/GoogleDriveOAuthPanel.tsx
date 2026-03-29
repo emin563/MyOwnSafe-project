@@ -1,8 +1,13 @@
-import { getGoogleAndroidOAuthRedirectUri, getGoogleDriveOAuthConfig } from '@/config/googleDrive';
+import {
+  getGoogleAndroidPackageOAuthRedirectUri,
+  getGoogleAndroidReverseClientRedirectUri,
+  getGoogleDriveOAuthConfig,
+} from '@/config/googleDrive';
 import { getSetting, setSetting } from '@/db/settings';
 import {
   clearGoogleDriveConnection,
   isGoogleDriveConnected,
+  notifyGoogleDriveAccountLinkChanged,
   persistGoogleDriveTokenFromAuth,
 } from '@/services/GoogleDriveSync';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,10 +15,11 @@ import { TokenResponse } from 'expo-auth-session/build/TokenRequest';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect } from '@react-navigation/native';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Switch,
   Text,
   TouchableOpacity,
@@ -21,6 +27,7 @@ import {
 } from 'react-native';
 import { Colors } from '@/theme';
 import { googleDriveBackupStyles as styles } from './googleDriveBackup.styles';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -30,10 +37,13 @@ WebBrowser.maybeCompleteAuthSession();
  */
 export default function GoogleDriveOAuthPanel() {
   const cfg = getGoogleDriveOAuthConfig();
-  const androidRedirectUri = getGoogleAndroidOAuthRedirectUri(cfg.androidClientId ?? '');
+  const androidRedirectUri =
+    getGoogleAndroidReverseClientRedirectUri(cfg.androidClientId ?? '') ??
+    getGoogleAndroidPackageOAuthRedirectUri();
   const [connected, setConnected] = useState(false);
   const [autoUpload, setAutoUpload] = useState(true);
   const [busy, setBusy] = useState(false);
+  const connectSessionRef = useRef(false);
 
   const [request, response, promptAsync] = Google.useAuthRequest(
     {
@@ -43,7 +53,6 @@ export default function GoogleDriveOAuthPanel() {
       scopes: ['https://www.googleapis.com/auth/drive.file'],
       extraParams: {
         access_type: 'offline',
-        prompt: 'consent',
       },
     },
     androidRedirectUri ? {} : { path: 'oauthredirect' }
@@ -75,6 +84,13 @@ export default function GoogleDriveOAuthPanel() {
         }
       })();
     } else if (response?.type === 'error') {
+      if (response.params?.error === 'access_denied') {
+        Alert.alert(
+          'Google Drive',
+          'Google blocked sign-in (access_denied). Play Console closed-beta testers only control who can install the app—not Google Sign-In. In Google Cloud Console (same project as your OAuth client): APIs & Services → OAuth consent screen → add each Google account under Test users while Publishing status is Testing, or move to In production. Drive API must stay enabled there. Workspace orgs may still block access by policy.'
+        );
+        return;
+      }
       const err = response.error;
       const msg =
         err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string'
@@ -89,14 +105,23 @@ export default function GoogleDriveOAuthPanel() {
       Alert.alert('Google Drive', 'OAuth is still loading. Try again in a moment.');
       return;
     }
+    if (connectSessionRef.current) {
+      return;
+    }
+    connectSessionRef.current = true;
     setBusy(true);
     try {
-      await promptAsync();
+      await withExternalActivityGuard(() =>
+        promptAsync(
+          Platform.OS === 'android' ? { showInRecents: true, createTask: true } : undefined
+        )
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Sign-in failed.';
       Alert.alert('Google Drive', msg);
     } finally {
       setBusy(false);
+      connectSessionRef.current = false;
     }
   };
 
@@ -125,6 +150,7 @@ export default function GoogleDriveOAuthPanel() {
   const onToggleAutoUpload = async (value: boolean) => {
     setAutoUpload(value);
     await setSetting('googleDriveAutoUpload', value ? '1' : '0');
+    notifyGoogleDriveAccountLinkChanged();
   };
 
   return (
@@ -142,8 +168,9 @@ export default function GoogleDriveOAuthPanel() {
           <View style={styles.rowContent}>
             <Text style={styles.rowLabel}>Connect Google Drive</Text>
             <Text style={styles.rowHint}>
-              After you create a backup, Vault can copy the zip to a &quot;Vault&quot; folder in your Google Drive (no
-              Vault server).
+              With auto-upload on, new documents and backup zips copy into a &quot;Vault&quot; folder in the{' '}
+              <Text style={{ fontWeight: '600' }}>Google Drive</Text> app (not Google Photos). Open Drive → browse
+              folders → Vault.
             </Text>
           </View>
           {busy ? <ActivityIndicator color={Colors.primary} size="small" /> : null}
@@ -156,7 +183,10 @@ export default function GoogleDriveOAuthPanel() {
             </View>
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>Google Drive</Text>
-              <Text style={styles.rowHint}>Connected. Backups can sync to your Drive.</Text>
+              <Text style={styles.rowHint}>
+                Connected. Auto-upload puts files in Drive&apos;s <Text style={{ fontWeight: '600' }}>Vault</Text>{' '}
+                folder (not Photos).
+              </Text>
             </View>
           </View>
           <View style={styles.divider} />
@@ -165,8 +195,10 @@ export default function GoogleDriveOAuthPanel() {
               <Ionicons name="cloud-upload-outline" size={20} color={Colors.primary} />
             </View>
             <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>Auto-upload backups</Text>
-              <Text style={styles.rowHint}>When enabled, each backup zip is copied to Drive after it is built.</Text>
+              <Text style={styles.rowLabel}>Auto-upload to Drive</Text>
+              <Text style={styles.rowHint}>
+                When enabled, each saved document and each backup zip is copied to Vault in the Drive app (Android).
+              </Text>
             </View>
             <Switch
               value={autoUpload}

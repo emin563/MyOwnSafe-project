@@ -1,4 +1,6 @@
 import Constants from 'expo-constants';
+import * as Application from 'expo-application';
+import { Platform } from 'react-native';
 
 export type GoogleDriveOAuthExtra = {
   androidClientId?: string;
@@ -8,15 +10,29 @@ export type GoogleDriveOAuthExtra = {
 const ANDROID_CLIENT_SUFFIX = '.apps.googleusercontent.com';
 
 /**
- * Google OAuth for Android native clients requires this exact redirect pattern (not the app package name).
- * @see https://developers.google.com/identity/protocols/oauth2/native-app
+ * Reverse client-id redirect (Google / AppAuth-Android pattern).
+ * Requires the Android OAuth client in Google Cloud Console to have **Custom URI scheme** enabled
+ * (Credentials → your Android client → Advanced settings). Disabled by default for new clients since 2023.
+ * @see https://developers.google.com/identity/protocols/oauth2/native-app#enabling-custom-uri-scheme
+ * @see https://github.com/openid/AppAuth-Android/blob/master/app/README-Google.md
  */
-export function getGoogleAndroidOAuthRedirectUri(androidClientId: string): string | null {
+export function getGoogleAndroidReverseClientRedirectUri(androidClientId: string): string | null {
   const id = androidClientId?.trim() ?? '';
   if (!id.endsWith(ANDROID_CLIENT_SUFFIX)) return null;
   const idPart = id.slice(0, -ANDROID_CLIENT_SUFFIX.length);
   if (!idPart) return null;
   return `com.googleusercontent.apps.${idPart}:/oauth2redirect`;
+}
+
+/**
+ * Package-based redirect (Google native-app doc alternate form).
+ * Use when reverse-client redirect is rejected for your Cloud Console client.
+ */
+export function getGoogleAndroidPackageOAuthRedirectUri(): string | null {
+  if (Platform.OS !== 'android') return null;
+  const appId = Application.applicationId?.trim();
+  if (!appId) return null;
+  return `${appId}:/oauth2redirect`;
 }
 
 /**

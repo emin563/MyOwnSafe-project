@@ -25,11 +25,11 @@ import {
 import { GOOGLE_PRIVACY_MODAL_BODY, GOOGLE_PRIVACY_MODAL_TITLE } from '@/constants/googleServicesPrivacy';
 import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import * as LocalAuthentication from 'expo-local-authentication';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -58,12 +58,9 @@ type MetricsSummary = {
 
 export default function SettingsScreen() {
   const {
-    biometricEnabled,
-    setBiometricEnabled,
     loadDocuments,
     loadCategories,
     loadSettings,
-    setUnlocked,
     setIsPro,
     isPro,
     setGoogleExtensionsPrivacyTipDismissed,
@@ -127,41 +124,6 @@ export default function SettingsScreen() {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setDeveloperToolsVisible(value);
     await setSetting('developerToolsVisible', value ? '1' : '0');
-  };
-
-  // ── Biometric toggle ────────────────────────────────────────────────────
-
-  const handleBiometricToggle = async (value: boolean) => {
-    if (value) {
-      // Verify the device actually supports biometrics before enabling
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
-      if (!hasHardware || !isEnrolled) {
-        Alert.alert(
-          'Biometrics Unavailable',
-          'Your device does not have biometric authentication set up. Please configure Face ID or fingerprint in your device settings first.'
-        );
-        return;
-      }
-
-      // Confirm with a live auth before enabling the lock
-      const auth = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Confirm to enable Vault lock',
-        fallbackLabel: 'Use Passcode',
-        disableDeviceFallback: false,
-      });
-
-      if (!auth.success) return;
-    }
-
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await setBiometricEnabled(value);
-
-    if (value) {
-      // Mark as unlocked since the user just passed auth
-      setUnlocked(true);
-    }
   };
 
   // ── Backup ──────────────────────────────────────────────────────────────
@@ -350,7 +312,7 @@ export default function SettingsScreen() {
       const snapshot = regressionRows ?? (await getRegressionChecklist());
       setRegressionRows(snapshot);
       const report = buildRegressionReport(snapshot);
-      await Share.share({ message: report });
+      await withExternalActivityGuard(() => Share.share({ message: report }));
       setRegressionMessage('Regression report shared.');
       setRegressionReportActionAt(`Last shared: ${new Date().toLocaleString()}`);
     } finally {
@@ -407,6 +369,23 @@ export default function SettingsScreen() {
               <Text style={styles.rowLabel}>Privacy & Offline</Text>
               <Text style={styles.rowHint}>
                 On-device vault, optional Google scanner &amp; Drive backup, and how to use them privately
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => router.push('/app-locking-info')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="lock-closed-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>App Locking</Text>
+              <Text style={styles.rowHint}>
+                Secure Vault using your device's built-in App Lock, Secure Folder, or Private Space feature.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -530,37 +509,14 @@ export default function SettingsScreen() {
                 <View style={styles.rowContent}>
                   <Text style={styles.rowLabel}>Pro is active</Text>
                   <Text style={styles.rowHint}>
-                    Unlimited documents, custom categories, tags, photo text reads, backup, bulk actions, duplicate, and
-                    full prompt library.
+                    Unlimited documents, custom categories, tags, photo text reads, backup, bulk actions, Google Drive
+                    sync, and full prompt library.
                   </Text>
                 </View>
               </View>
             </View>
           </>
         )}
-
-        {/* Security Section */}
-        <Text style={styles.sectionTitle}>Security</Text>
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <View style={styles.rowIcon}>
-              <Ionicons name="finger-print-outline" size={20} color={Colors.primary} />
-            </View>
-            <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>Biometric Lock</Text>
-              <Text style={styles.rowHint}>
-                Lock Vault when the app moves to the background
-              </Text>
-            </View>
-            <Switch
-              value={biometricEnabled}
-              onValueChange={handleBiometricToggle}
-              trackColor={{ false: Colors.border, true: Colors.primary }}
-              thumbColor={Colors.white}
-              ios_backgroundColor={Colors.border}
-            />
-          </View>
-        </View>
 
         {/* Data Portability Section */}
         <Text style={styles.sectionTitle}>Data Portability</Text>
@@ -617,7 +573,10 @@ export default function SettingsScreen() {
             )}
           </TouchableOpacity>
 
-          <GoogleDriveBackupSection />
+          <GoogleDriveBackupSection
+            isPro={isPro}
+            onRequestPro={() => setPaywallVisible(true)}
+          />
         </View>
 
         {__DEV__ && (

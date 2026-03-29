@@ -46,10 +46,28 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 | Task | Status |
 |------|--------|
 | SQLite migration: `settings` table + `documents.notification_id` | ✅ Done |
-| Biometric LockScreen (expo-local-authentication, AppState) | ✅ Done |
+| PIN LockScreen + AppState minimize/resume vault lock | ✅ Done |
 | PDF generation (expo-print, PdfService) + UI | ✅ Done |
 | expo-notifications + store integration (expiry alerts) | ✅ Done |
 | BackupService (jszip): backup/restore DB + archive | ✅ Done |
+
+---
+
+## 3b. Vault lock updates (PIN-only, policy)
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| Remove biometric unlock (`expo-local-authentication`), Settings “Biometric Lock”, and Android biometric permissions / plugin | ✅ Done |
+| PIN-only `LockScreen`; vault lock gated on `pinEnabled` only (`app/_layout.tsx`, `app-store`) | ✅ Done |
+| Minimize→resume lock: minimum background duration + `auth-flags` grace + `vaultLockPolicy.shouldArmVaultMinimizeTimer()` | ✅ Done |
+| `withExternalActivityGuard()` on share/picker/OAuth paths (`BackupService`, `DocumentCard`, document editor, `PdfService`, `AiDestinationSheet`, `GoogleDriveOAuthPanel`, `openWithExternal`, Settings) | ✅ Done |
+| `app/capture.tsx`: hold `systemPickerOpen` for whole screen mount (camera/import Add flow) | ✅ Done |
+| `app/_layout.tsx`: `isAppReady` gate until after `loadSettings`; clear `systemPickerOpen` on resume before away-time check | ✅ Done |
+| `LockScreen`: call `beginVaultPostInteractionGrace()` after correct PIN (aligns with store `setUnlocked` grace) | ✅ Done |
+| Remove vault-lock debug / NDJSON ingest helpers (no `vaultLockDebug` / `agentDebugIngest` in tree) | ✅ Done |
+| Settings: no vault Security row after biometric removal — PIN still via `pinEnabled` in DB / `setPinEnabled` only | ✅ Done (UX gap if users need in-app PIN setup) |
 
 ---
 
@@ -133,9 +151,10 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 ## 7. Current state (summary)
 
 - **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
-- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, lock (PIN/biometric), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts.
+- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, vault lock (PIN), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts.
 - **Notes:** OCR (`expo-text-extractor` / dev build) may be unavailable in Expo Go; search still uses title/notes/tags and stored `ocr_text` when present. ML Kit requires a **native rebuild** with the Infinitered module linked; otherwise capture uses expo-camera only. Google Drive Connect requires valid OAuth client IDs in `app.json` extra and a build that includes **expo-crypto** (dependency of `expo-auth-session`; autolinks — do not declare as a config plugin).
 - **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
+- **Notes (vault lock):** PIN-only; AppState minimize→resume with thresholds and `auth-flags` / `vaultLockPolicy`; capture screen and guarded shares/pickers avoid false locks. See §3b and `Plan.md/AGENTS.md`.
 - **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, deeper AI-optional export UX, iOS parity (not a current target).
 
 ---

@@ -16,7 +16,7 @@ type Props = {
 
 /**
  * Explains that an action is not included in the Free plan (not a numeric slot limit).
- * Use instead of LimitReachedDialog when the gate is “Pro feature”, e.g. duplicate document.
+ * Use instead of LimitReachedDialog when the gate is a Pro-only feature (e.g. multi-select bulk actions).
  */
 export function ProFeatureDialog({ visible, onClose, title, message, onUpgrade }: Props) {
   const [paywallVisible, setPaywallVisible] = useState(false);

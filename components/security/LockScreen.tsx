@@ -1,14 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Animated,
-  AppState,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import * as LocalAuthentication from 'expo-local-authentication';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
@@ -22,12 +19,6 @@ const PIN_LENGTH = 4;
 
 export function LockScreen({ onUnlock }: Props) {
   const verifyPin = useAppStore((s) => s.verifyPin);
-  const biometricEnabled = useAppStore((s) => s.biometricEnabled);
-  const pinEnabled = useAppStore((s) => s.pinEnabled);
-
-  // When biometrics is on, start with the loading view; flip to PIN pad on failure
-  const [showPinPad, setShowPinPad] = useState(!biometricEnabled);
-  const [biometricPending, setBiometricPending] = useState(biometricEnabled);
   const [digits, setDigits] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const shakeAnim = useRef(new Animated.Value(0)).current;
@@ -49,78 +40,11 @@ export function LockScreen({ onUnlock }: Props) {
     ]).start();
   }, [shakeAnim]);
 
-  // ── Biometric authentication ─────────────────────────────────────────────
-
-  const triggerBiometric = useCallback(async () => {
-    setBiometricPending(true);
-    setErrorMessage(null);
-
-    authFlags.isAuthenticating = true;
-
-    try {
-      if (AppState.currentState !== 'active') {
-        setShowPinPad(true);
-        return;
-      }
-
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
-      if (!hasHardware || !isEnrolled) {
-        if (isMounted.current) setShowPinPad(true);
-        return;
-      }
-
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Unlock Vault',
-        fallbackLabel: pinEnabled ? 'Use PIN' : '',
-        cancelLabel: 'Cancel',
-        disableDeviceFallback: false,
-      });
-
-      if (!isMounted.current) return;
-
-      if (result.success) {
-        onUnlock();
-      } else {
-        setShowPinPad(true);
-      }
-    } catch {
-      if (isMounted.current) setShowPinPad(true);
-    } finally {
-      authFlags.isAuthenticating = false;
-      authFlags.authEndedAt = Date.now();
-      if (isMounted.current) setBiometricPending(false);
-    }
-  }, [onUnlock, pinEnabled]);
-
-  // Auto-trigger biometrics on mount (only when enabled).
-  // If the app is still in the background (common when LockScreen mounts due to
-  // AppState backgrounding), wait for it to become active before triggering.
-  useEffect(() => {
-    if (!biometricEnabled) return;
-
-    if (AppState.currentState === 'active') {
-      triggerBiometric();
-      return;
-    }
-
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        sub.remove();
-        triggerBiometric();
-      }
-    });
-    return () => sub.remove();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── PIN verification ─────────────────────────────────────────────────────
-
   useEffect(() => {
     if (digits.length === PIN_LENGTH) {
       const entered = digits.join('');
       if (verifyPin(entered)) {
+        authFlags.beginVaultPostInteractionGrace();
         onUnlock();
       } else {
         triggerShake();
@@ -145,22 +69,6 @@ export function LockScreen({ onUnlock }: Props) {
     [digits.length]
   );
 
-  // ── Biometric loading view ───────────────────────────────────────────────
-
-  if (biometricEnabled && biometricPending && !showPinPad) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.iconContainer}>
-          <Ionicons name="finger-print-outline" size={40} color={Colors.primary} />
-        </View>
-        <Text style={styles.title}>Authenticating…</Text>
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: Spacing.base }} />
-      </View>
-    );
-  }
-
-  // ── PIN pad (primary when biometrics disabled; fallback when it fails) ───
-
   return (
     <View style={styles.container}>
       <View style={styles.iconContainer}>
@@ -168,13 +76,8 @@ export function LockScreen({ onUnlock }: Props) {
       </View>
 
       <Text style={styles.title}>Enter PIN</Text>
-      <Text style={styles.subtitle}>
-        {showPinPad && biometricEnabled
-          ? 'Biometric failed. Enter your PIN to unlock.'
-          : 'Enter your 4-digit PIN to unlock the Vault.'}
-      </Text>
+      <Text style={styles.subtitle}>Enter your 4-digit PIN to unlock the Vault.</Text>
 
-      {/* Dot indicators */}
       <Animated.View
         style={[styles.dotsRow, { transform: [{ translateX: shakeAnim }] }]}
       >
@@ -192,7 +95,6 @@ export function LockScreen({ onUnlock }: Props) {
         <View style={styles.errorPlaceholder} />
       )}
 
-      {/* Keypad */}
       <View style={styles.keypad}>
         {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'].map(
           (key, idx) => {
@@ -222,18 +124,6 @@ export function LockScreen({ onUnlock }: Props) {
           }
         )}
       </View>
-
-      {/* Retry biometrics after a failed attempt */}
-      {biometricEnabled && showPinPad && (
-        <TouchableOpacity
-          style={styles.biometricRetry}
-          onPress={triggerBiometric}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="finger-print-outline" size={18} color={Colors.primary} />
-          <Text style={styles.biometricRetryText}>Try Biometrics Again</Text>
-        </TouchableOpacity>
-      )}
     </View>
   );
 }
@@ -329,19 +219,6 @@ const styles = StyleSheet.create({
   keyText: {
     color: Colors.text,
     fontSize: Typography.fontSizeXl,
-    fontWeight: Typography.fontWeightMedium,
-  },
-  biometricRetry: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginTop: Spacing.xl,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.base,
-  },
-  biometricRetryText: {
-    color: Colors.primary,
-    fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightMedium,
   },
 });

@@ -9,6 +9,7 @@ import { PillButton } from './PillButton';
 import { AI_DESTINATIONS, type AiDestination } from '@/services/AiDestinations';
 import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 
 type Props = {
   visible: boolean;
@@ -41,7 +42,7 @@ export function AiDestinationSheet({ visible, onClose, fileUri, minimal = false 
 
   const destinations = useMemo(() => AI_DESTINATIONS, []);
 
-  const shareDocument = async () => {
+  const shareFileToSheet = async () => {
     if (!fileUri) return;
     const canShare = await Sharing.isAvailableAsync();
     if (!canShare) return;
@@ -49,29 +50,35 @@ export function AiDestinationSheet({ visible, onClose, fileUri, minimal = false 
     await Sharing.shareAsync(fileUri, { dialogTitle: 'Share to AI' });
   };
 
+  const shareDocument = async () => {
+    await withExternalActivityGuard(shareFileToSheet);
+  };
+
   const handleDestination = async (dest: AiDestination) => {
     try {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      if (dest.deepLinkUrl) {
-        const canOpen = await Linking.canOpenURL(dest.deepLinkUrl);
-        if (canOpen) {
-          Linking.openURL(dest.deepLinkUrl).catch(() => {});
-          showToast('Opened AI app. Now attach the document.', 'info');
-        } else {
-          showToast('AI app not installed. Opening share sheet.', 'info');
+      await withExternalActivityGuard(async () => {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        if (dest.deepLinkUrl) {
+          const canOpen = await Linking.canOpenURL(dest.deepLinkUrl);
+          if (canOpen) {
+            Linking.openURL(dest.deepLinkUrl).catch(() => {});
+            showToast('Opened AI app. Now attach the document.', 'info');
+          } else {
+            showToast('AI app not installed. Opening share sheet.', 'info');
+          }
         }
-      }
 
-      if (dontShowAgain && !privacyDismissed) {
-        try {
-          await setSetting(PRIVACY_DISMISSED_KEY, 'true');
-          setPrivacyDismissed(true);
-        } catch {
-          // ignore
+        if (dontShowAgain && !privacyDismissed) {
+          try {
+            await setSetting(PRIVACY_DISMISSED_KEY, 'true');
+            setPrivacyDismissed(true);
+          } catch {
+            // ignore
+          }
         }
-      }
 
-      await shareDocument();
+        await shareFileToSheet();
+      });
     } catch {
       // ignore
     }

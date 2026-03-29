@@ -22,6 +22,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 import { getDocumentById } from '@/db/documents';
 import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
@@ -397,7 +398,7 @@ export default function DocumentEditorScreen() {
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      await Sharing.shareAsync(fileUri);
+      await withExternalActivityGuard(() => Sharing.shareAsync(fileUri));
     } catch {
       // ignore
     }

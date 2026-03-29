@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import * as LegacyFS from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 import { maybeUploadVaultBackupToGoogleDrive } from '@/services/GoogleDriveSync';
 import * as Sharing from 'expo-sharing';
 import { getDb } from '@/db/schema';
@@ -119,11 +120,13 @@ export async function createBackup(): Promise<void> {
   try {
     const canShare = await Sharing.isAvailableAsync();
     if (canShare) {
-      await Sharing.shareAsync(zipPath, {
-        mimeType: 'application/zip',
-        UTI: 'public.zip-archive',
-        dialogTitle: 'Save Vault Backup',
-      });
+      await withExternalActivityGuard(() =>
+        Sharing.shareAsync(zipPath, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Save Vault Backup',
+        })
+      );
     }
   } finally {
     // Avoid unbounded growth in cache/ from repeated backups.
@@ -145,10 +148,12 @@ export async function createBackup(): Promise<void> {
  */
 export async function restoreFromBackup(): Promise<boolean> {
   // 1. Pick the zip file
-  const result = await DocumentPicker.getDocumentAsync({
-    type: 'application/zip',
-    copyToCacheDirectory: true,
-  });
+  const result = await withExternalActivityGuard(() =>
+    DocumentPicker.getDocumentAsync({
+      type: 'application/zip',
+      copyToCacheDirectory: true,
+    })
+  );
 
   if (result.canceled || !result.assets[0]) return false;
 
@@ -369,11 +374,13 @@ export async function shareSelectedDocuments(
   try {
     const canShare = await Sharing.isAvailableAsync();
     if (canShare) {
-      await Sharing.shareAsync(zipPath, {
-        mimeType: 'application/zip',
-        UTI: 'public.zip-archive',
-        dialogTitle: 'Share selected documents',
-      });
+      await withExternalActivityGuard(() =>
+        Sharing.shareAsync(zipPath, {
+          mimeType: 'application/zip',
+          UTI: 'public.zip-archive',
+          dialogTitle: 'Share selected documents',
+        })
+      );
     }
   } finally {
     // Avoid unbounded growth in cache/ from repeated zips.

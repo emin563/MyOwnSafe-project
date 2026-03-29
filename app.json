@@ -11,10 +11,7 @@
       "url": "https://u.expo.dev/272a3754-8793-4c10-980a-5e6ae967a076"
     },
     "icon": "./assets/images/icon.png",
-    "scheme": [
-      "promptblueprint",
-      "com.googleusercontent.apps.655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn"
-    ],
+    "scheme": "promptblueprint",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
@@ -26,6 +23,20 @@
       }
     },
     "android": {
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "com.gundogdu.myownsafe"
+            },
+            {
+              "scheme": "com.googleusercontent.apps.655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/adaptive-icon.png"
@@ -36,9 +47,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.RECORD_AUDIO"
       ],
       "package": "com.gundogdu.myownsafe"
     },
@@ -76,12 +85,6 @@
         }
       ],
       [
-        "expo-local-authentication",
-        {
-          "faceIDPermission": "Vault uses Face ID to verify your identity and unlock your secure documents."
-        }
-      ],
-      [
         "expo-notifications",
         {
           "icon": "./assets/images/icon.png",
@@ -89,7 +92,8 @@
           "defaultChannel": "vault-expiry"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "./plugins/withAndroidGoogleDriveOAuthIntent"
     ],
     "experiments": {
       "typedRoutes": true,

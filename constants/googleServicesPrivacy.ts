@@ -9,7 +9,7 @@ export const GOOGLE_PRIVACY_MODAL_BODY = `Vault stays offline-first: your vault 
 
 Document scanner (Android): Uses Google Play services on your phone to capture and straighten pages. The images are saved into your local vault like any other import—not sent to any server run by this app.
 
-Google Drive backup (optional, Android): Only runs if you sign in and start a backup. Copies go to the Google account you choose; Google’s terms and controls apply there.
+Google Drive backup (optional, Android, Pro): With an active Pro purchase you can sign in and turn on auto-upload; Vault can then copy each saved document and each backup zip to the Google account you choose; Google’s terms and controls apply there.
 
 You can read more anytime under Settings → Privacy & Offline.`;
 
@@ -22,9 +22,9 @@ export const GOOGLE_PRIVACY_SCANNER = {
 } as const;
 
 export const GOOGLE_PRIVACY_DRIVE = {
-  title: 'Google Drive backup (optional)',
+  title: 'Google Drive backup (optional, Pro)',
   body:
-    'Backup is off until you connect a Google account and run a backup yourself. Only then are encrypted copies uploaded to your Google Drive under your control. That transfer is between your device and Google; it does not replace on-device storage. Review Google’s privacy policy for what happens in your Drive account.',
+    'Google Drive linking and auto-upload are available on Android with an active Pro purchase. After you connect a Google account and enable auto-upload, copies of saved documents and backup zips can upload to your Google Drive under your control. That transfer is between your device and Google; it does not replace on-device storage. Review Google’s privacy policy for what happens in your Drive account.',
 } as const;
 
 export const GOOGLE_PRIVACY_CHOICE =

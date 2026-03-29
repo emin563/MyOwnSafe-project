@@ -1,5 +1,6 @@
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { PDFDocument } from 'pdf-lib';
 import type { Document } from '@/db/types';
@@ -325,10 +326,12 @@ export async function exportDocumentAsPdf(
 
   const canShare = await Sharing.isAvailableAsync();
   if (canShare) {
-    await Sharing.shareAsync(pdfUri, {
-      mimeType: 'application/pdf',
-      UTI: 'com.adobe.pdf',
-      dialogTitle: `Export "${doc.title}"`,
-    });
+    await withExternalActivityGuard(() =>
+      Sharing.shareAsync(pdfUri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: `Export "${doc.title}"`,
+      })
+    );
   }
 }

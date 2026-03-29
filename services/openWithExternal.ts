@@ -1,6 +1,7 @@
 import { Platform, Linking } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import type { FileType } from '@/db/types';
+import { withExternalActivityGuard } from '@/store/auth-flags';
 
 /**
  * Converts a file:// URI to a filesystem path for native modules (no scheme).
@@ -43,13 +44,15 @@ function isExpoGo(): boolean {
 async function openWithSharingFallback(uri: string, mime: string): Promise<void> {
   const Sharing = await import('expo-sharing');
   if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(uri, {
-      dialogTitle: 'Choose app',
-      mimeType: mime,
-    });
+    await withExternalActivityGuard(() =>
+      Sharing.shareAsync(uri, {
+        dialogTitle: 'Choose app',
+        mimeType: mime,
+      })
+    );
     return;
   }
-  await Linking.openURL(uri);
+  await withExternalActivityGuard(() => Linking.openURL(uri));
 }
 
 /**

@@ -66,12 +66,12 @@ export const FREE_TIER_ONE_LINERS: readonly string[] = [
   `${FREE_OCR_BASE_READS} free “Text from photo” reads to start, plus +${FREE_OCR_WEEKLY_BONUS} each week; vault search matches extracted text`,
 ];
 
-/** Features that are Pro-only (not numeric limits). */
+/** Features that are Pro-only (not numeric limits). Paywall lists in this order: strongest upgrade hooks first. */
 export const PRO_ONLY_FEATURES: readonly string[] = [
   'Backup vault to a .zip file and restore from it',
-  'Long-press to select multiple documents; bulk delete, move, tag, or zip-share',
-  'Duplicate a document in one tap',
+  'Google Drive: auto-upload documents and backup zips to your account (Android, Vault folder)',
   'Multi-page camera scan (several photos combined into one PDF)',
+  'Long-press to select multiple documents; bulk delete, move, tag, or zip-share',
   'Full library of AI prompt templates (Free includes one template per category)',
 ];
 

@@ -1,16 +1,16 @@
-import { FREE_TIER_ONE_LINERS, PRO_ONLY_FEATURES } from '@/services/limits';
+import { FREE_TIER_ONE_LINERS } from '@/services/limits';
 import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import {
-    Modal,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -22,46 +22,53 @@ type Props = {
   onRestore?: () => void;
 };
 
-const BENEFITS = [
+type PlusCategory = {
+  title: string;
+  items: readonly string[];
+};
+
+/**
+ * All Pro benefits in readable groups (nothing omitted vs former BENEFITS + PRO_ONLY_FEATURES).
+ * Order: strongest hooks first, then supporting points.
+ */
+const PLUS_CATEGORIES: readonly PlusCategory[] = [
   {
-    title: 'Unlimited Storage:',
-    description: 'Remove Free limits (25 files, 5 custom categories, 10 tags, unlimited photo text reads).',
+    title: 'More room in your vault',
+    items: [
+      'Remove Free limits: 25 files, 5 custom categories you create, and 10 tags.',
+      'Unlimited on-device “Text from photo” reads (Free starts with weekly bonus reads; Pro has no cap).',
+      'Create unlimited categories to stay organized.',
+      'Advanced sort and filter so you can find documents faster.',
+    ],
   },
   {
-    title: 'Works Fully Offline:',
-    description: 'Your documents stay on your device. No cloud required.',
+    title: 'Backup & optional cloud',
+    items: [
+      'Export your full vault as a .zip file and restore from it anytime.',
+      'Google Drive (Android): auto-upload saved documents and backup zips to a Vault folder in the account you link.',
+    ],
   },
   {
-    title: 'AI Optional Workflow:',
-    description: 'Export a copy to any AI app when you need it—no lock-in, no recurring fees.',
+    title: 'Capture & bulk actions',
+    items: [
+      'Multi-page camera scan: combine several photos into one PDF.',
+      'Long-press to select multiple documents; bulk delete, move, tag, or zip-share.',
+    ],
   },
   {
-    title: 'Backup & Restore:',
-    description: 'Export your vault as a zip and restore it anytime.',
+    title: 'AI workflows',
+    items: [
+      'Full library of AI prompt templates (Free includes one template per category).',
+      'Export a copy to any AI app when you need it—no lock-in, no recurring fees.',
+    ],
   },
   {
-    title: 'Bulk Actions:',
-    description: 'Select multiple documents to delete, move, tag, or zip-share.',
-  },
-  {
-    title: 'Text from photos:',
-    description: 'Read and copy text from receipts and labels—Free starts with 15 reads and gets +2 weekly; Pro is unlimited.',
-  },
-  {
-    title: 'Advanced Sort & Filter:',
-    description: 'Find what you need faster with sorting and quick filters.',
-  },
-  {
-    title: 'No Subscriptions:',
-    description: 'One-time payment. Your data stays on your device forever.',
-  },
-  {
-    title: 'Custom Folders:',
-    description: 'Create unlimited categories to stay organized.',
-  },
-  {
-    title: '100% Offline Security:',
-    description: 'We never see your data.',
+    title: 'Privacy & pricing',
+    items: [
+      'Your documents stay on your device for everyday use; no cloud required for the core vault.',
+      'We never see your data.',
+      'One-time payment—no subscriptions.',
+    ],
   },
 ];
 
@@ -106,22 +113,26 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
               • {line}
             </Text>
           ))}
-          <Text style={styles.freeBlockSub}>Pro-only on Free (one-time unlock removes these gates):</Text>
-          {PRO_ONLY_FEATURES.map((line, i) => (
-            <Text key={`pro-${i}`} style={styles.freeBlockLineMuted}>
-              • {line}
-            </Text>
-          ))}
 
-          <Text style={styles.plusIntro}>Everything in Free, Plus:</Text>
+          <Text style={styles.plusIntro}>Everything in Free, plus:</Text>
           <View style={styles.benefits}>
-            {BENEFITS.map((item, idx) => (
-              <View key={idx} style={styles.benefitRow}>
-                <Ionicons name="checkmark-circle" size={20} color={Colors.primary} style={styles.benefitCheck} />
-                <View style={styles.benefitText}>
-                  <Text style={styles.benefitTitle}>{item.title}</Text>
-                  <Text style={styles.benefitDesc}>{item.description}</Text>
-                </View>
+            {PLUS_CATEGORIES.map((category, catIdx) => (
+              <View
+                key={category.title}
+                style={[styles.categoryBlock, catIdx > 0 && styles.categoryBlockSpaced]}
+              >
+                <Text style={styles.categoryTitle}>{category.title}</Text>
+                {category.items.map((line, lineIdx) => (
+                  <View key={`${catIdx}-${lineIdx}`} style={styles.benefitRow}>
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={20}
+                      color={Colors.primary}
+                      style={styles.benefitCheck}
+                    />
+                    <Text style={styles.benefitLine}>{line}</Text>
+                  </View>
+                ))}
               </View>
             ))}
           </View>
@@ -209,51 +220,43 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeightSemibold,
     marginBottom: Spacing.sm,
   },
-  freeBlockSub: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.xs,
-  },
   freeBlockLine: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
     lineHeight: 20,
     marginBottom: Spacing.xs,
   },
-  freeBlockLineMuted: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    lineHeight: 18,
-    marginBottom: 4,
-  },
   plusIntro: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeSm,
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+    marginTop: Spacing.lg,
     marginBottom: Spacing.md,
   },
   benefits: {
     marginBottom: Spacing.xl,
   },
+  categoryBlock: {},
+  categoryBlockSpaced: {
+    marginTop: Spacing.lg,
+  },
+  categoryTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightBold,
+    marginBottom: Spacing.sm,
+  },
   benefitRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   benefitCheck: {
     marginRight: Spacing.sm,
     marginTop: 2,
   },
-  benefitText: {
+  benefitLine: {
     flex: 1,
-  },
-  benefitTitle: {
-    color: Colors.text,
-    fontSize: Typography.fontSizeBase,
-    fontWeight: Typography.fontWeightSemibold,
-    marginBottom: 2,
-  },
-  benefitDesc: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
     lineHeight: 20,
@@ -278,21 +281,10 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeightBold,
     marginTop: Spacing.xs,
   },
-  priceKicker: {
-    color: Colors.primary,
-    fontSize: Typography.fontSizeSm,
-    fontWeight: Typography.fontWeightSemibold,
-    marginBottom: 2,
-  },
   priceText: {
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightMedium,
-  },
-  priceSubText: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeSm,
-    marginTop: 4,
   },
   priceFinePrint: {
     color: Colors.textMuted,

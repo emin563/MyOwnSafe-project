@@ -21,6 +21,8 @@ Status note (implemented in this iteration):
 - OCR polling uses a cancellable `setTimeout` loop (no overlapping async interval).
 - Dashboard tag fetching respects the current file-type filter.
 
+Vault lock (UX / correctness, not search throughput): re-lock uses an AppState minimize→resume model with a minimum away duration and `store/auth-flags.ts` + `services/vaultLockPolicy.ts` so system sheets (pickers, share) and brief post-unlock OS transitions do not arm the timer incorrectly. **`app/capture.tsx`** keeps `systemPickerOpen` true for the full time that screen is mounted (coarser than per-call guards) so the Add Document flow does not trip the away timer. **`app/_layout.tsx`** defers AppState handling until settings have loaded and clears `systemPickerOpen` when returning active. Share/picker/OAuth entry points use `withExternalActivityGuard()` (see `Plan.md/AGENTS.md` for file list). Prior vault-lock debug/NDJSON ingest code was removed to avoid accidental telemetry. See `Plan.md/AGENTS.md` and `Plan.md/security.md` for behavior and threat-model notes.
+
 ---
 
 ### 2) Findings (Prioritized)

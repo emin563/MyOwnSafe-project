@@ -39,9 +39,11 @@ import {
   cancelNotification,
 } from '@/services/NotificationService';
 import { copyFileInArchive } from '@/services/StorageService';
+import { maybeUploadVaultDocumentToGoogleDrive } from '@/services/GoogleDriveSync';
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
 import { getFreeLimit, getOcrReadTrialsRemaining, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
 import { LimitError } from '@/services/LimitError';
+import { authFlags } from '@/store/auth-flags';
 type AppStore = {
   categories: Category[];
   documents: Document[];
@@ -64,7 +66,6 @@ type AppStore = {
   isUnlocked: boolean;
   pinEnabled: boolean;
   pinHash: string | null;
-  biometricEnabled: boolean;
 
   // Pro
   isPro: boolean;
@@ -174,7 +175,6 @@ type AppStore = {
   loadSettings: () => Promise<void>;
   setPinEnabled: (enabled: boolean, pin?: string) => Promise<void>;
   verifyPin: (input: string) => boolean;
-  setBiometricEnabled: (enabled: boolean) => Promise<void>;
   setIsPro: (value: boolean) => Promise<void>;
 
   setPendingBulkImports: (items: { fileUri: string; fileType: FileType; name?: string }[]) => void;
@@ -196,7 +196,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isUnlocked: false,
   pinEnabled: false,
   pinHash: null,
-  biometricEnabled: false,
   isPro: false,
   firstLaunchAt: null,
   isIntroEligible: false,
@@ -236,12 +235,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   clearSelection: () => set({ selectionMode: false, selectedIds: [] }),
 
-  setUnlocked: (unlocked) => set({ isUnlocked: unlocked }),
+  setUnlocked: (unlocked) => {
+    if (unlocked) {
+      authFlags.beginVaultPostInteractionGrace();
+    }
+    set({ isUnlocked: unlocked });
+  },
 
   loadSettings: async () => {
     const pinEnabledVal = await getSetting('pinEnabled');
     const pinHash = await getSetting('pinHash');
-    const biometricVal = await getSetting('biometricEnabled');
     const proVal = await getSetting('isPro');
     const firstLaunchAtVal = await getSetting('firstLaunchAt');
     const vaultNameVal = await getSetting('vaultName');
@@ -255,7 +258,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const ocrLanguageVal = await getSetting('ocrLanguage');
     const mlKitScannerModeVal = await getSetting('mlKitScannerMode');
     const pinEnabled = pinEnabledVal === 'true';
-    const biometricEnabled = biometricVal === 'true';
     const isPro = proVal === 'true';
     const savedVaultName = (vaultNameVal ?? '').trim();
     const vaultName = savedVaultName || 'My Vault';
@@ -284,14 +286,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     const isIntroEligible = now - firstLaunchAt < SEVEN_DAYS_MS;
-    const lockActive = pinEnabled || biometricEnabled;
+    const lockActive = pinEnabled;
     if (!savedVaultName) {
       await setSetting('vaultName', vaultName);
+    }
+    if (!lockActive) {
+      authFlags.beginVaultPostInteractionGrace();
     }
     set({
       pinEnabled,
       pinHash,
-      biometricEnabled,
       isPro,
       firstLaunchAt,
       isIntroEligible,
@@ -326,24 +330,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await setSetting('pinHash', pin);
       await setSetting('pinEnabled', 'true');
       set({ pinEnabled: true, pinHash: pin, isUnlocked: true });
+      authFlags.beginVaultPostInteractionGrace();
     } else {
       await setSetting('pinEnabled', 'false');
       await setSetting('pinHash', '');
       set({ pinEnabled: false, pinHash: null, isUnlocked: true });
+      authFlags.beginVaultPostInteractionGrace();
     }
   },
 
   verifyPin: (input) => {
     const { pinHash } = get();
     return pinHash !== null && input === pinHash;
-  },
-
-  setBiometricEnabled: async (enabled) => {
-    await setSetting('biometricEnabled', String(enabled));
-    set({ biometricEnabled: enabled });
-    if (!enabled) {
-      set({ isUnlocked: true });
-    }
   },
 
   setIsPro: async (value) => {
@@ -633,6 +631,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
     }
 
+    void maybeUploadVaultDocumentToGoogleDrive(fileUri, fileType, title, docId);
+
     await get().loadDocuments();
     return docId;
   },
@@ -665,6 +665,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     await updateDocumentNotificationId(id, newNotificationId);
+
+    void maybeUploadVaultDocumentToGoogleDrive(fileUri, fileType, title, id);
+
     await get().loadDocuments();
   },
 
