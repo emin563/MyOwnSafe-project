@@ -1,7 +1,22 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
+function getArchiveDir(): string {
+  return new Directory(Paths.document, 'archive').uri;
+}
+
 function getArchiveDirectory(): Directory {
   return new Directory(Paths.document, 'archive');
+}
+
+function sanitizeFilename(name: string): string {
+  const base = name.replace(/\\/g, '/').split('/').pop() ?? '';
+  return base.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.{2,}/g, '.').slice(0, 120) || `file_${Date.now()}`;
+}
+
+function isInsideArchive(uri: string): boolean {
+  const archiveUri = getArchiveDir();
+  const normalized = uri.replace(/\\/g, '/');
+  return normalized.startsWith(archiveUri) && !normalized.slice(archiveUri.length).includes('..');
 }
 
 function ensureArchiveDir(): Directory {
@@ -22,7 +37,8 @@ export async function saveFileToArchive(tempUri: string, fileName?: string): Pro
     const archiveDirectory = ensureArchiveDir();
 
     const ext = tempUri.split('.').pop()?.toLowerCase() ?? 'jpg';
-    const uniqueName = fileName ?? `doc_${Date.now()}.${ext}`;
+    const rawName = fileName ?? `doc_${Date.now()}.${ext}`;
+    const uniqueName = sanitizeFilename(rawName);
     const sourceFile = new File(tempUri);
     const destinationFile = new File(archiveDirectory, uniqueName);
     sourceFile.copy(destinationFile);
@@ -52,6 +68,7 @@ export async function copyFileInArchive(sourceUri: string, suggestedExt?: string
  */
 export async function deleteFileFromArchive(fileUri: string): Promise<void> {
   try {
+    if (!isInsideArchive(fileUri)) return;
     const file = new File(fileUri);
     if (file.exists) {
       file.delete();

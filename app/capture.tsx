@@ -276,8 +276,12 @@ export default function CaptureScreen() {
       if (ocrExtractOnCapture) {
         const pageResults: Array<string | null> = new Array(pageUris.length).fill(null);
         const weakPageIndexes: number[] = [];
+        const totalPages = pageUris.length;
+        setShowLongOpOverlay(true);
         // Extract sequentially for stability (native OCR is CPU/GPU heavy).
         for (let pageIndex = 0; pageIndex < pageUris.length; pageIndex++) {
+          setLongOpMessage(`Reading text: page ${pageIndex + 1} of ${totalPages}`);
+          setLongOpPercent(Math.round(((pageIndex) / totalPages) * 50));
           const pageUri = pageUris[pageIndex];
           const ocrPageStartedAt = Date.now();
           const result = await withTimeout(
@@ -329,7 +333,11 @@ export default function CaptureScreen() {
 
         // Retry weak pages once with document mode for cleaner output.
         if (weakPageIndexes.length > 0) {
-          for (const weakIndex of weakPageIndexes) {
+          setLongOpMessage(`Retrying ${weakPageIndexes.length} weak page(s)…`);
+          setLongOpPercent(50);
+          for (let ri = 0; ri < weakPageIndexes.length; ri++) {
+            const weakIndex = weakPageIndexes[ri];
+            setLongOpPercent(50 + Math.round(((ri) / weakPageIndexes.length) * 10));
             const pageUri = pageUris[weakIndex];
             const retryStartedAt = Date.now();
             const retried = await withTimeout(
@@ -371,17 +379,18 @@ export default function CaptureScreen() {
         }
       }
 
+      // PDF generation occupies 60-100% of the progress bar (OCR occupied 0-60%).
+      const PDF_BASE_PCT = 60;
       const updatePdfProgress = (progress: { stage: 'chunk' | 'merge' | 'finalize'; current: number; total: number }) => {
-        // Weighted estimate: chunking 70%, merge 25%, finalize 5%.
         const safeRatio = progress.total > 0 ? progress.current / progress.total : 0;
         if (progress.stage === 'chunk') {
-          const pct = Math.max(1, Math.min(70, Math.round(safeRatio * 70)));
+          const pct = Math.max(PDF_BASE_PCT, Math.min(PDF_BASE_PCT + 28, PDF_BASE_PCT + Math.round(safeRatio * 28)));
           setLongOpPercent(pct);
           setLongOpMessage(`Preparing PDF chunks (${progress.current}/${progress.total})`);
           return;
         }
         if (progress.stage === 'merge') {
-          const pct = Math.max(71, Math.min(95, 70 + Math.round(safeRatio * 25)));
+          const pct = Math.max(88, Math.min(97, 88 + Math.round(safeRatio * 9)));
           setLongOpPercent(pct);
           setLongOpMessage(`Merging PDF parts (${progress.current}/${progress.total})`);
           return;
@@ -1046,7 +1055,6 @@ export default function CaptureScreen() {
         kind={limitKind}
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
-          await useAppStore.getState().setIsPro(true);
           const actionToRetry = pendingAfterUpgradeAction;
           setPendingAfterUpgradeAction(null);
           if (actionToRetry === 'capture') {
@@ -1065,11 +1073,9 @@ export default function CaptureScreen() {
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
         onUpgrade={() => {
-          useAppStore.getState().setIsPro(true);
           setPaywallVisible(false);
         }}
         onRestore={() => {
-          useAppStore.getState().setIsPro(true);
           setPaywallVisible(false);
         }}
       />
@@ -1077,8 +1083,7 @@ export default function CaptureScreen() {
         visible={proMultiPagePitchVisible}
         onClose={() => setProMultiPagePitchVisible(false)}
         featureDescription="Combine several scans into a single multi-page PDF. Unlock Pro to use this feature."
-        onUpgrade={async () => {
-          await useAppStore.getState().setIsPro(true);
+        onUpgrade={() => {
           setProMultiPagePitchVisible(false);
         }}
       />

@@ -133,7 +133,7 @@ export default function FilePreviewScreen() {
 
   const bodyTextStyle = [
     styles.bodyReadable,
-    fileType === 'excel' ? styles.bodyMono : null,
+    fileType === 'excel' || fileType === 'word' ? styles.bodyMono : null,
   ];
 
   return (

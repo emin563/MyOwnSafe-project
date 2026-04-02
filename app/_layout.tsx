@@ -1,18 +1,15 @@
-import { useEffect, useRef } from 'react';
-import { AppState, AppStateStatus, StyleSheet, View } from 'react-native';
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { initDb } from '@/db/schema';
 import { useAppStore } from '@/store/app-store';
-import { authFlags, MIN_MINIMIZED_MS_FOR_VAULT_LOCK } from '@/store/auth-flags';
-import { shouldArmVaultMinimizeTimer } from '@/services/vaultLockPolicy';
-import { LockScreen } from '@/components/security/LockScreen';
 import { Toast } from '@/components/ui';
 import { InputModal } from '@/components/ui/InputModal';
 import {
   configureNotifications,
   requestNotificationPermissions,
 } from '@/services/NotificationService';
+import { configureRevenueCat } from '@/services/PurchaseService';
 export default function RootLayout() {
   const {
     setDbReady,
@@ -20,9 +17,6 @@ export default function RootLayout() {
     loadDocuments,
     loadTags,
     loadSettings,
-    isUnlocked,
-    pinEnabled,
-    setUnlocked,
     vaultNamePromptVisible,
     setVaultName,
     dismissVaultNamePrompt,
@@ -30,83 +24,19 @@ export default function RootLayout() {
     clearToast,
   } = useAppStore();
 
-  const appState = useRef<AppStateStatus>(AppState.currentState);
-  /** Set when the app actually minimizes (background); cleared on resume. */
-  const vaultMinimizedAt = useRef<number | null>(null);
-  // Prevents the AppState listener from firing during the initial bootstrap
-  // sequence before settings have loaded and the lock state is known.
-  const isAppReady = useRef(false);
-
-  const showLock = pinEnabled && !isUnlocked;
-
   useEffect(() => {
     async function bootstrap() {
       await initDb();
       setDbReady(true);
+      configureRevenueCat();
       await configureNotifications();
       await loadSettings();
-      // Lock flags come from settings; allow AppState handling while the rest
-      // of bootstrap (documents, tags, notifications) continues — otherwise
-      // the listener ignores background during early bootstrap.
-      isAppReady.current = true;
       await loadCategories();
       await loadDocuments(null);
       await loadTags();
       await requestNotificationPermissions();
     }
     bootstrap();
-
-    /**
-     * Vault lock: only after the user minimizes the app (background) and opens it again.
-     * Ignores pickers and very short background blips.
-     */
-    function applyVaultLockOnMinimizeResume(nextState: AppStateStatus) {
-      const prev = appState.current;
-
-      if (!isAppReady.current) {
-        appState.current = nextState;
-        return;
-      }
-
-      const minimized =
-        nextState === 'background' &&
-        (prev === 'active' || prev === 'inactive');
-      const resumedFromMinimize =
-        nextState === 'active' &&
-        (prev === 'background' || prev === 'inactive');
-
-      if (resumedFromMinimize) {
-        authFlags.systemPickerOpen = false;
-        const started = vaultMinimizedAt.current;
-        vaultMinimizedAt.current = null;
-        if (started != null) {
-          const awayMs = Date.now() - started;
-          const { pinEnabled } = useAppStore.getState();
-          if (pinEnabled && awayMs >= MIN_MINIMIZED_MS_FOR_VAULT_LOCK) {
-            setUnlocked(false);
-          }
-        }
-      }
-
-      if (minimized) {
-        if (!shouldArmVaultMinimizeTimer()) {
-          appState.current = nextState;
-          return;
-        }
-        const { pinEnabled } = useAppStore.getState();
-        if (pinEnabled) {
-          vaultMinimizedAt.current = Date.now();
-        }
-      }
-
-      appState.current = nextState;
-    }
-
-    const subscription = AppState.addEventListener('change', applyVaultLockOnMinimizeResume);
-
-    return () => {
-      subscription.remove();
-    };
   }, []);
 
   return (
@@ -205,12 +135,6 @@ export default function RootLayout() {
           }}
         />
       </Stack>
-
-      {showLock && (
-        <View style={StyleSheet.absoluteFill}>
-          <LockScreen onUnlock={() => setUnlocked(true)} />
-        </View>
-      )}
 
       {toast && (
         <Toast

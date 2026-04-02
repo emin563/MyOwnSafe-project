@@ -69,6 +69,47 @@ export async function initDb(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
   `);
 
+  // FTS5 full-text search index (external-content backed by documents table)
+  await database.execAsync(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+      title,
+      notes,
+      ocr_text,
+      content='documents',
+      content_rowid='id'
+    );
+  `);
+
+  // Triggers keep the FTS index in sync with the documents table.
+  // DROP + CREATE avoids "already exists" errors on re-runs while letting us
+  // update trigger bodies in future migrations.
+  await database.execAsync(`
+    DROP TRIGGER IF EXISTS documents_fts_ai;
+    CREATE TRIGGER documents_fts_ai AFTER INSERT ON documents BEGIN
+      INSERT INTO documents_fts(rowid, title, notes, ocr_text)
+      VALUES (new.id, new.title, new.notes, new.ocr_text);
+    END;
+
+    DROP TRIGGER IF EXISTS documents_fts_ad;
+    CREATE TRIGGER documents_fts_ad AFTER DELETE ON documents BEGIN
+      INSERT INTO documents_fts(documents_fts, rowid, title, notes, ocr_text)
+      VALUES ('delete', old.id, old.title, old.notes, old.ocr_text);
+    END;
+
+    DROP TRIGGER IF EXISTS documents_fts_au;
+    CREATE TRIGGER documents_fts_au AFTER UPDATE ON documents BEGIN
+      INSERT INTO documents_fts(documents_fts, rowid, title, notes, ocr_text)
+      VALUES ('delete', old.id, old.title, old.notes, old.ocr_text);
+      INSERT INTO documents_fts(rowid, title, notes, ocr_text)
+      VALUES (new.id, new.title, new.notes, new.ocr_text);
+    END;
+  `);
+
+  // Populate FTS index from existing data (idempotent rebuild).
+  await database.execAsync(`
+    INSERT INTO documents_fts(documents_fts) VALUES('rebuild');
+  `);
+
   // Safe migration: add notification_id column if it does not exist yet
   try {
     await database.execAsync('ALTER TABLE documents ADD COLUMN notification_id TEXT;');

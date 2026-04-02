@@ -2,8 +2,10 @@ import { FREE_TIER_ONE_LINERS } from '@/services/limits';
 import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
-import React from 'react';
+import React, { useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -75,6 +77,44 @@ const PLUS_CATEGORIES: readonly PlusCategory[] = [
 export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) {
   const insets = useSafeAreaInsets();
   const isIntroEligible = useAppStore((s) => s.isIntroEligible);
+  const purchasePro = useAppStore((s) => s.purchasePro);
+  const restorePro = useAppStore((s) => s.restorePro);
+  const [loading, setLoading] = useState(false);
+
+  const handleUpgrade = async () => {
+    setLoading(true);
+    try {
+      const result = await purchasePro();
+      if (result.success) {
+        onUpgrade();
+        onClose();
+      } else if (!result.cancelled) {
+        Alert.alert('Purchase Failed', result.message || 'Please try again.');
+      }
+    } catch {
+      Alert.alert('Error', 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    setLoading(true);
+    try {
+      const result = await restorePro();
+      if (result.success) {
+        Alert.alert('Restored', 'Your Pro purchase has been restored.');
+        if (onRestore) onRestore();
+        onClose();
+      } else {
+        Alert.alert('Not Found', result.message || 'No previous purchase found.');
+      }
+    } catch {
+      Alert.alert('Error', 'Could not restore purchases. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <Modal
@@ -154,22 +194,26 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
           </View>
 
           <Pressable
-            style={({ pressed }) => [styles.upgradeBtn, pressed && styles.upgradeBtnPressed]}
-            onPress={onUpgrade}
+            style={({ pressed }) => [styles.upgradeBtn, pressed && styles.upgradeBtnPressed, loading && styles.upgradeBtnDisabled]}
+            onPress={handleUpgrade}
+            disabled={loading}
           >
-            <Text style={styles.upgradeBtnText}>Unlock Pro (One-time)</Text>
+            {loading ? (
+              <ActivityIndicator color={Colors.white} size="small" />
+            ) : (
+              <Text style={styles.upgradeBtnText}>Unlock Pro (One-time)</Text>
+            )}
           </Pressable>
 
-          {onRestore && (
-            <TouchableOpacity
-              style={styles.restoreBtn}
-              onPress={onRestore}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="refresh-outline" size={18} color={Colors.primary} style={styles.restoreIcon} />
-              <Text style={styles.restoreBtnText}>I already bought Pro — restore my account</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            style={styles.restoreBtn}
+            onPress={handleRestore}
+            activeOpacity={0.7}
+            disabled={loading}
+          >
+            <Ionicons name="refresh-outline" size={18} color={Colors.primary} style={styles.restoreIcon} />
+            <Text style={styles.restoreBtnText}>I already bought Pro — restore my purchase</Text>
+          </TouchableOpacity>
 
           <Text style={styles.noSub}>No subscriptions, ever.</Text>
 
@@ -307,6 +351,9 @@ const styles = StyleSheet.create({
   },
   upgradeBtnPressed: {
     opacity: 0.85,
+  },
+  upgradeBtnDisabled: {
+    opacity: 0.6,
   },
   upgradeBtnText: {
     color: Colors.white,

@@ -148,11 +148,39 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 
 ---
 
+## 6b. In-App Purchase (RevenueCat)
+
+**Status:** Implemented (wiring complete; awaiting Google Play product creation and API key).
+
+| Task | Status |
+|------|--------|
+| Install `react-native-purchases` + add `com.android.vending.BILLING` permission in `app.json` | ✅ Done |
+| `config/revenueCat.ts`: API key from `app.json > extra.revenueCatApiKey`, entitlement ID `pro_access` | ✅ Done |
+| `services/PurchaseService.ts`: `configureRevenueCat()`, `purchasePro()`, `restorePurchases()`, `checkProEntitlement()`, `getProPackage()` | ✅ Done |
+| `app/_layout.tsx`: call `configureRevenueCat()` during bootstrap | ✅ Done |
+| `store/app-store.ts`: `purchasePro()`, `restorePro()`, `syncProStatus()` actions; `loadSettings()` silently checks entitlements | ✅ Done |
+| `PaywallModal`: "Unlock Pro" triggers real Google Play purchase; "Restore" always visible; loading spinner | ✅ Done |
+
+---
+
+## 6c. UX: App Locking info + Privacy section
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| `app/app-locking-info.tsx`: dedicated screen with step-by-step instructions for Samsung Secure Folder, Pixel Private Space, and other Android App Lock features | ✅ Done |
+| Settings Privacy section: "App Locking" row (tappable, navigates to info screen) | ✅ Done |
+| Register `app-locking-info` route in `_layout.tsx` Stack | ✅ Done |
+
+---
+
 ## 7. Current state (summary)
 
 - **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
-- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, vault lock (PIN), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts.
+- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, vault lock (PIN), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts, **In-App Purchase** (RevenueCat + Google Play Billing), **App Locking** info guide.
 - **Notes:** OCR (`expo-text-extractor` / dev build) may be unavailable in Expo Go; search still uses title/notes/tags and stored `ocr_text` when present. ML Kit requires a **native rebuild** with the Infinitered module linked; otherwise capture uses expo-camera only. Google Drive Connect requires valid OAuth client IDs in `app.json` extra and a build that includes **expo-crypto** (dependency of `expo-auth-session`; autolinks — do not declare as a config plugin).
+- **Notes (IAP):** RevenueCat SDK (`react-native-purchases`) integrated; `PaywallModal` triggers real purchases. Requires: (1) `revenueCatApiKey` in `app.json` extra, (2) Google Play product created, (3) native rebuild for billing permission.
 - **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
 - **Notes (vault lock):** PIN-only; AppState minimize→resume with thresholds and `auth-flags` / `vaultLockPolicy`; capture screen and guarded shares/pickers avoid false locks. See §3b and `Plan.md/AGENTS.md`.
 - **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, deeper AI-optional export UX, iOS parity (not a current target).

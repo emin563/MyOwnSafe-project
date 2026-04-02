@@ -33,6 +33,7 @@ export default function HomeScreen() {
     selectedCategoryId,
     selectedTagId,
     searchQuery,
+    searchResultCapped,
     sortBy,
     setSortBy,
     selectionMode,
@@ -48,7 +49,6 @@ export default function HomeScreen() {
     loadDocumentsByTag,
     showToast,
     isPro,
-    setIsPro,
   } = useAppStore();
   const [documentTagsMap, setDocumentTagsMap] = useState<Record<number, Tag[]>>({});
   const [bulkDeleteVisible, setBulkDeleteVisible] = useState(false);
@@ -342,11 +342,9 @@ export default function HomeScreen() {
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
         onUpgrade={() => {
-          setIsPro(true);
           setPaywallVisible(false);
         }}
         onRestore={() => {
-          setIsPro(true);
           setPaywallVisible(false);
         }}
       />
@@ -400,6 +398,15 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      {searchResultCapped && searchQuery.trim().length > 0 && (
+        <View style={styles.resultCapBanner}>
+          <Ionicons name="information-circle-outline" size={16} color={Colors.primary} />
+          <Text style={styles.resultCapText}>
+            Showing first {displayedDocuments.length} results. Refine your search for more.
+          </Text>
+        </View>
+      )}
 
       <FlatList
         data={displayedDocuments}
@@ -659,6 +666,19 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     fontSize: Typography.fontSizeSm,
     paddingVertical: Spacing.lg,
+  },
+  resultCapBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    backgroundColor: 'rgba(16, 163, 127, 0.08)',
+  },
+  resultCapText: {
+    flex: 1,
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeXs,
   },
   list: {
     padding: Spacing.base,

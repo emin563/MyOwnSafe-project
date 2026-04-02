@@ -1176,7 +1176,6 @@ export default function DocumentEditorScreen() {
         kind="tags"
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
-          await useAppStore.getState().setIsPro(true);
           if (!pendingNewTagName) return;
           const retryName = pendingNewTagName;
           setPendingNewTagName(null);
@@ -1210,11 +1209,9 @@ export default function DocumentEditorScreen() {
         visible={ocrPaywallVisible}
         onClose={() => setOcrPaywallVisible(false)}
         onUpgrade={() => {
-          void useAppStore.getState().setIsPro(true);
           setOcrPaywallVisible(false);
         }}
         onRestore={() => {
-          void useAppStore.getState().setIsPro(true);
           setOcrPaywallVisible(false);
         }}
       />

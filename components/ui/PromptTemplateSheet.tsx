@@ -32,7 +32,7 @@ type Props = {
 };
 
 export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document, fileUri }: Props) {
-  const { showToast, isPro, setIsPro } = useAppStore();
+  const { showToast, isPro } = useAppStore();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'All' | (typeof PROMPT_CATEGORIES)[number]>('All');
   const [paywallVisible, setPaywallVisible] = useState(false);
@@ -227,11 +227,9 @@ export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document
           visible={paywallVisible}
           onClose={() => setPaywallVisible(false)}
           onUpgrade={() => {
-            setIsPro(true);
             setPaywallVisible(false);
           }}
           onRestore={() => {
-            setIsPro(true);
             setPaywallVisible(false);
           }}
         />

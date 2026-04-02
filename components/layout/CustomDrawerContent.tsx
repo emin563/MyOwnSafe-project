@@ -49,7 +49,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
     searchQuery,
     setSearchQuery,
     runSearch,
-    setIsPro,
     vaultName,
     setVaultName,
   } = useAppStore();
@@ -416,7 +415,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
         kind={limitKind}
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
-          await setIsPro(true);
           if (!pendingCategoryName) return;
           const retryName = pendingCategoryName;
           setPendingCategoryName(null);

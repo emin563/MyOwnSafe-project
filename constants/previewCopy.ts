@@ -9,7 +9,7 @@ export const PREVIEW_COPY = {
   loading: 'Loading preview…',
   unavailableTitle: 'Preview unavailable',
   pdfSubtitle: 'In-app preview. For annotations or full features, open in another app.',
-  wordSubtitle: 'Text preview only. Original layout: open in another app.',
+  wordSubtitle: 'Document as plain text (sections + tables like rows). Full layout: open in another app.',
   excelSubtitle: 'Table as plain text. Full workbook: open in another app.',
   documentSubtitle: 'Text preview. For formatted view, open in another app.',
   imageSubtitle: 'Image preview. Pinch to zoom.',

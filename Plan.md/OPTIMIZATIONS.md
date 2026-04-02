@@ -1,25 +1,36 @@
 ### 1) Optimization Summary
 
-Overall, the app is well-structured for an offline-first, local-SQLite workflow, but it currently has several high-ROI performance hotspots:
-- Search/filters can cause excessive work on every keystroke and trigger unnecessary navigation.
-- Database search is likely to degrade quickly as the vault grows because `%LIKE%` + tag joins run without supporting indexes/FTS.
-- Heavy flows (backup/restore, PDF export) can create significant memory pressure due to Base64 + full in-memory zips.
+Overall, the app is well-structured for an offline-first, local-SQLite workflow. After two optimization passes the critical hotspots have been addressed and the remaining work is polish and monitoring.
 
-Top 3 highest-impact improvements:
-1. Debounce and de-couple search from navigation (avoid `router.replace` on every keystroke).
-2. Make DB search faster: add relevant SQLite indexes and consider an FTS5 strategy for `title/notes/ocr_text` + tag search.
-3. Prevent memory spikes and cache bloat in `BackupService` (sanitize zip paths, reduce restore write concurrency, and clean up generated zip files).
+Top 3 remaining improvements (future):
+1. Stream-based backup/restore to reduce peak Base64 memory (requires native module or Expo FileSystem streaming API).
+2. Add search-result pagination (infinite scroll) instead of a hard 200-row LIMIT for power users with very large vaults.
+3. Move heavy OCR + PDF generation to a background thread / WorkManager on Android to keep the UI thread fully responsive.
 
 Biggest risk if no changes are made:
-- As document count grows, search latency and UI jank will likely increase non-linearly, and backups/PDF exports may become unstable or trigger Android memory pressure/OOM.
+- For vaults beyond ~5 000 documents, FTS5 prefix matching will stay fast but backup/restore memory pressure may still spike due to in-memory Base64 zip generation.
 
-Status note (implemented in this iteration):
-- Drawer search is debounced and no longer performs `router.replace` while typing.
-- DB search was rewritten to avoid `JOIN + DISTINCT` and is supported by hot-path SQLite indexes.
-- Prompt template browsing uses `FlatList` virtualization.
-- Backup cache zips are cleaned up after sharing and restore writes are sequential (lower memory/disk concurrency).
-- OCR polling uses a cancellable `setTimeout` loop (no overlapping async interval).
-- Dashboard tag fetching respects the current file-type filter.
+---
+
+#### Status — implemented optimizations (iterations 1 + 2)
+
+| # | Optimization | Files | Iteration |
+|---|---|---|---|
+| 1 | Debounced drawer search; no `router.replace` per keystroke | `components/layout/CustomDrawerContent.tsx` | 1 |
+| 2 | DB search rewritten: `EXISTS` subquery, hot-path indexes | `db/documents.ts`, `db/schema.ts` | 1 |
+| 3 | FTS5 full-text index with triggers + `MATCH` search (LIKE fallback) | `db/schema.ts`, `db/documents.ts` | 2 |
+| 4 | Prompt template sheet virtualized with `FlatList` | `components/ui/PromptTemplateSheet.tsx` | 1 |
+| 5 | Backup zip cache cleanup + sequential restore writes | `services/BackupService.ts` | 1 |
+| 6 | Backup creation preflight cap (100 MiB / 5 000 files) | `services/BackupService.ts` | 2 |
+| 7 | Restore path sanitization, size caps, DoS hardening | `services/BackupService.ts` | 1 |
+| 8 | OCR polling: cancellable `setTimeout` loop, adaptive backoff | `app/document/[id].tsx` | 1 |
+| 9 | OCR multi-page progress: page-by-page percent overlay | `app/capture.tsx` | 2 |
+| 10 | Dashboard tag fetching respects `fileTypeFilter` | `app/(drawer)/index.tsx` | 1 |
+| 11 | Skip redundant JS sort when `sortBy === 'newest'` | `store/app-store.ts` | 1 |
+| 12 | Precomputed timestamps in `sortDocumentsBy` (no repeated `new Date()` in comparator) | `store/app-store.ts` | 2 |
+| 13 | Search result cap UX: banner shown when 200-row LIMIT is hit | `store/app-store.ts`, `app/(drawer)/index.tsx` | 2 |
+
+In-App Purchase (RevenueCat): `react-native-purchases` SDK added; `PurchaseService.ts` wraps all RevenueCat calls. `PaywallModal` now triggers a real Google Play Billing sheet (with loading state) instead of a local `setIsPro(true)`. `loadSettings()` silently syncs entitlements on every launch so users who purchased on another device or restored outside the app still get Pro. Configuration is in `app.json > extra.revenueCatApiKey`. Native rebuild required.
 
 Vault lock (UX / correctness, not search throughput): re-lock uses an AppState minimize→resume model with a minimum away duration and `store/auth-flags.ts` + `services/vaultLockPolicy.ts` so system sheets (pickers, share) and brief post-unlock OS transitions do not arm the timer incorrectly. **`app/capture.tsx`** keeps `systemPickerOpen` true for the full time that screen is mounted (coarser than per-call guards) so the Add Document flow does not trip the away timer. **`app/_layout.tsx`** defers AppState handling until settings have loaded and clears `systemPickerOpen` when returning active. Share/picker/OAuth entry points use `withExternalActivityGuard()` (see `Plan.md/AGENTS.md` for file list). Prior vault-lock debug/NDJSON ingest code was removed to avoid accidental telemetry. See `Plan.md/AGENTS.md` and `Plan.md/security.md` for behavior and threat-model notes.
 
@@ -28,200 +39,153 @@ Vault lock (UX / correctness, not search throughput): re-lock uses an AppState m
 ### 2) Findings (Prioritized)
 
 1. **Keystroke search triggers expensive work + navigation**
-   - **Title (updated)**: Keystroke search is now debounced; typing no longer triggers route replacement per character
+   - **Status**: RESOLVED
    - **Category**: Frontend
    - **Severity**: Critical
    - **Impact**: latency, throughput (DB + JS), battery, UX responsiveness
-   - **Evidence (updated)**: `[components/layout/CustomDrawerContent.tsx](components/layout/CustomDrawerContent.tsx)` now debounces `runSearch(q)` in `handleSearch` and `handleSearch` no longer calls `router.replace('/(drawer)')` on each keystroke.
-   - **Why it’s inefficient**: Every character typed causes:
-     - immediate SQLite `%LIKE%` search execution
-     - additional re-renders of the drawer/dashboard tree
-   - **Recommended fix**:
-     - Keep the debounce window (~250ms) and flush the last query on unmount (implemented).
-     - Optionally ignore queries shorter than N chars or handle empty query as a separate path.
-   - **Tradeoffs / Risks**: Slightly delayed UI updates while typing; ensure cancel-on-unmount and immediate update on blur/submit.
-   - **Expected impact estimate**: High (often 2–10x fewer DB calls during typing; noticeably smoother typing)
-   - **Removal Safety**: Safe
-   - **Reuse Scope**: local to drawer search handler
+   - **Evidence**: `components/layout/CustomDrawerContent.tsx` debounces `runSearch(q)` in `handleSearch`; no `router.replace` on each keystroke.
+   - **What was done**: 250 ms debounce window, flush-on-unmount, empty-query fast path.
+   - **Expected impact**: High (2–10× fewer DB calls during typing)
 
-2. **DB search likely does a full scan due to `%LIKE%` and missing indexes**
-   - **Title (updated)**: SQLite search still uses `%LIKE%` substring matching, but tag matching is now `EXISTS`-based and supported by hot-path indexes (FTS5 remains next)
+2. **DB search degrades on large vaults (`%LIKE%`, no FTS)**
+   - **Status**: RESOLVED
    - **Category**: DB
    - **Severity**: Critical
-   - **Impact**: latency, battery, scalability as vault size increases
+   - **Impact**: latency, battery, scalability
    - **Evidence**:
-     - `[db/documents.ts](db/documents.ts)` `searchDocuments()` rewrites tag matching to an `EXISTS` subquery (no `JOIN + DISTINCT` row explosion) and still applies `LIKE '%{query}%'` to `d.title`, `d.notes`, and optionally `d.ocr_text`, ordered by `d.updated_at DESC`.
-     - `[db/schema.ts](db/schema.ts)` `initDb()` now creates hot-path indexes for search/joins (`documents(updated_at)`, `documents(category_id)`, `document_tags(document_id/tag_id)`, `tags(name)`).
-   - **Why it’s inefficient**:
-     - `%term%` disables normal index usefulness for most B-tree indexes.
-     - Tag search still relies on `%LIKE%` (so it will scale with vault size), but the previous join+distinct overhead is avoided via `EXISTS`.
-   - **Recommended fix**:
-     - Add supporting indexes (at minimum for join keys and `updated_at`):
-       - `document_tags(document_id)`, `document_tags(tag_id)`
-       - `documents(updated_at)` and consider `documents(category_id)`
-       - `tags(name)` (may already be indexed via `UNIQUE`, but confirm)
-     - For best results, implement FTS5:
-       - Use `fts5(title, notes, ocr_text)` for fast substring-ish queries (with `MATCH`).
-       - Optionally model tag search separately or denormalize tag names into an FTS table keyed by `documents.id`.
-     - Reduce DISTINCT overhead:
-       - Replace tag joins with `EXISTS` subqueries (already implemented).
-   - **Tradeoffs / Risks**:
-     - FTS5 adds complexity and requires keeping the FTS table in sync (triggers or manual updates).
-     - Index additions must be done safely in `initDb()` and won’t break existing installs.
-   - **Expected impact estimate**: High (especially for large vaults; can turn seconds into tens of milliseconds)
-   - **Removal Safety**: Likely Safe (indexes/FTS changes require verification)
-   - **Reuse Scope**: DB schema + `searchDocuments()` implementation
+     - `db/schema.ts` — FTS5 virtual table `documents_fts` with external-content on `documents(title, notes, ocr_text)`. Triggers (`documents_fts_ai/ad/au`) keep the index in sync. Idempotent `rebuild` on every `initDb()`.
+     - `db/documents.ts` — `searchDocuments()` builds an FTS5 `MATCH` expression (quoted prefix tokens) and queries `documents_fts` first. Falls back to `%LIKE%` if FTS5 is unavailable or the query fails.
+     - Tag search still uses `EXISTS` + `LIKE` (tags are not in the FTS table).
+     - Hot-path B-tree indexes on `documents(updated_at)`, `documents(category_id)`, `document_tags(document_id/tag_id)`, `tags(name)`.
+   - **What was done**: FTS5 virtual table + triggers + `MATCH` search with graceful LIKE fallback.
+   - **Expected impact**: High (token-based FTS5 MATCH is orders of magnitude faster than `%LIKE%` scans for large tables)
 
 3. **Double-sorting in JS wastes CPU and allocations**
-   - **Title**: Search results are ordered in SQL and re-sorted again in JS
+   - **Status**: RESOLVED
    - **Category**: CPU
    - **Severity**: High
    - **Impact**: CPU time, allocations, potential UI stutter on slower devices
    - **Evidence**:
-     - `[db/documents.ts](db/documents.ts)` `searchDocuments()` ends with `ORDER BY d.updated_at DESC`.
-     - `[store/app-store.ts](store/app-store.ts)` `runSearch()` now skips `sortDocumentsBy` when `sortBy === 'newest'` (uses SQL ordering directly).
-     - `[store/app-store.ts](store/app-store.ts)` `sortDocumentsBy()` recreates `Date` objects inside comparator for every compare (e.g., `new Date(b.updated_at).getTime()`).
-   - **Why it’s inefficient**:
-     - Sorting is `O(n log n)` and comparator allocs can dominate for larger `n`.
-     - The SQL ordering is already “newest”; JS sort repeats it.
-   - **Recommended fix**:
-     - For `sortBy === 'newest'`, skip JS sort and use SQL ordering as-is.
-     - For `sortBy === 'oldest'`, either:
-       - change `searchDocuments()` to order based on sortBy, or
-       - add a branch in `runSearch()` to query for oldest.
-     - Precompute timestamps once per document list (create `updatedAtMs` field in the query/store mapping) to reduce comparator allocations.
-   - **Tradeoffs / Risks**: Must ensure stable semantics for all sorts (`expiring`, `name`) and OCR inclusion.
-   - **Expected impact estimate**: Medium-High (bigger effect when results are large or on low-end devices)
-   - **Removal Safety**: Needs Verification (correctness for each sort mode)
-   - **Reuse Scope**: store-wide search + sorting logic
+     - `store/app-store.ts` — `runSearch()` skips `sortDocumentsBy` when `sortBy === 'newest'`.
+     - `sortDocumentsBy()` now precomputes `new Date(updated_at).getTime()` once per document before sorting (no repeated `Date` construction in the comparator). Early return for single-element arrays.
+   - **What was done**: Skip JS sort for SQL-ordered result; precompute timestamps; early-exit for trivial lists.
+   - **Expected impact**: Medium-High (bigger effect on low-end devices and large result sets)
 
 4. **Prompt templates UI renders all cards at once**
-   - **Title (updated)**: Prompt library browsing uses `FlatList` virtualization (reduces modal jank for many templates)
+   - **Status**: RESOLVED
    - **Category**: Frontend
    - **Severity**: High
    - **Impact**: UI jank, memory usage, slow modal open/scroll
-   - **Evidence (updated)**: `[components/ui/PromptTemplateSheet.tsx](components/ui/PromptTemplateSheet.tsx)` now uses `FlatList` virtualization (only renders a window of ~100 templates).
-   - **Why it’s inefficient**:
-     - Rendering 100 templates creates a large component tree.
-     - On lower-memory Android devices, modal open/scroll can stutter.
-   - **Recommended fix**:
-     - Replace `ScrollView` with `FlatList` virtualization (`renderItem`, `keyExtractor`).
-     - Add `initialNumToRender`, `windowSize`, and `removeClippedSubviews` where appropriate.
-   - **Tradeoffs / Risks**: Slightly more code; ensure nested gesture/touch interactions with `Modal` remain correct.
-   - **Expected impact estimate**: Medium-High (modal responsiveness improvement)
-   - **Removal Safety**: Likely Safe (UI refactor)
-   - **Reuse Scope**: prompt sheet component
+   - **Evidence**: `components/ui/PromptTemplateSheet.tsx` uses `FlatList` with `initialNumToRender`, `windowSize`, `removeClippedSubviews`.
+   - **What was done**: Replaced `ScrollView` with `FlatList` virtualization.
+   - **Expected impact**: Medium-High (modal responsiveness improvement)
 
 5. **Backup zip creation may exhaust memory (Base64 + full in-memory zip)**
-   - **Title**: Backup builds large Base64 payloads and generates zip fully in memory
+   - **Status**: MITIGATED
    - **Category**: Memory
    - **Severity**: Critical
-   - **Impact**: OOM risk, slow backup times, UI freezes if not isolated
-   - **Evidence**: `[services/BackupService.ts](services/BackupService.ts)`:
-     - Reads each archive file via `readAsStringAsync(... Base64)` and adds to `JSZip` as Base64.
-     - Generates the full archive with `zip.generateAsync({ type: 'base64' })` and writes that full Base64 string to disk.
-   - **Why it’s inefficient**:
-     - Base64 inflates size (~33%).
-     - `JSZip` keeps file payloads in memory until `generateAsync` completes.
-   - **Recommended fix**:
-     - Add safety limits:
-       - hard cap total archive size (use `[services/StorageService.ts](services/StorageService.ts)` `getArchiveSize()` or new helper) and/or cap number of files.
-       - refuse or require Pro for large zips.
-     - Add progress + yield (avoid long blocking loops in JS).
-     - Consider generating zip as binary/blob where possible (Expo/RN constraints apply), or reduce Base64 conversions.
-     - After sharing, delete the generated zip file to avoid cache growth (implemented).
-   - **Tradeoffs / Risks**: Limits may frustrate users with very large archives; must communicate size expectations.
-   - **Expected impact estimate**: High (stability; prevents OOM/cache bloat)
-   - **Removal Safety**: Needs Verification (zip generation compatibility)
-   - **Reuse Scope**: backup and selected-document share flows
+   - **Impact**: OOM risk, slow backup times, UI freezes
+   - **Evidence**: `services/BackupService.ts`:
+     - `preflightBackup()` estimates archive size and file count before building the zip.
+     - Hard caps: 100 MiB total / 5 000 files. `createBackup()` throws a descriptive error if limits are exceeded; the settings screen catches this and shows `Alert.alert`.
+     - Zip cache files are deleted after sharing.
+   - **What was done**: Pre-flight size/count gate; cache cleanup after share. In-memory Base64 zip generation remains (streaming not available in Expo).
+   - **Remaining**: Stream-based zip generation would eliminate the in-memory peak entirely.
+   - **Expected impact**: High (prevents OOM for realistic vaults; user sees clear error for oversized archives)
 
 6. **Restore path traversal risk (security) + high concurrency write storm**
-   - **Title (updated)**: Restore writes sequentially and uses basename-only destination paths (reduces traversal/corruption risk)
-   - **Category**: Reliability
+   - **Status**: RESOLVED
+   - **Category**: Reliability / Security
    - **Severity**: Critical
-   - **Impact**: security (path traversal), reliability (restore failures), device integrity
-   - **Evidence**: `[services/BackupService.ts](services/BackupService.ts)` restore:
-     - Writes archive entries sequentially (no large `Promise.all` concurrency burst).
-     - Derives destination path using only the basename (`ARCHIVE_DIR + safeName`) to reduce path traversal / restore corruption vectors.
-   - **Why it’s inefficient**:
-     - Zip entries can be malicious: `relativePath` might contain `../` or absolute paths.
-     - Path traversal could write outside the intended `archive/` directory.
-     - Many concurrent writes can spike memory/disk usage; sequential restore reduces the spike.
-   - **Recommended fix**:
-     - Sanitize zip entry paths:
-       - Reject paths containing `..`, path separators (`/` or `\`), or starting with `/`.
-       - Optionally enforce “single filename only” because your archive writes as `archive/${fileName}`.
-     - Use limited concurrency or sequential writes:
-       - `for...of await` or concurrency limit (e.g., 2–4 at a time).
-   - **Tradeoffs / Risks**: If older backups include nested directories, strict sanitization might skip some files. Mitigate by supporting safe nested paths but always strip traversal segments.
-   - **Expected impact estimate**: High (security + stability)
-   - **Removal Safety**: Needs Verification (backup compatibility)
-   - **Reuse Scope**: restore path handling
+   - **Impact**: security (path traversal), reliability (restore failures)
+   - **Evidence**: `services/BackupService.ts`:
+     - `toSafeFilename()` extracts basename only, rejects traversal patterns, reserved filenames, and entries exceeding length limits.
+     - Sequential write loop (no `Promise.all` burst).
+     - Hard caps: `MAX_ZIP_BYTES` (50 MiB), `MAX_MANIFEST_BYTES` (2 MiB), `MAX_CATEGORIES` (200), `MAX_DOCUMENTS` (5 000), `MAX_ARCHIVE_ENTRIES` (20 000), per-file uncompressed size check.
+   - **What was done**: Full path sanitization, sequential writes, hard caps on all dimensions.
+   - **Expected impact**: High (security + stability)
 
 7. **OCR polling can overload DB and overlap async calls**
-   - **Title (updated)**: OCR editor uses a cancellable `setTimeout` polling loop (no async overlap)
+   - **Status**: RESOLVED
    - **Category**: Concurrency
    - **Severity**: High
    - **Impact**: CPU/DB usage, battery, potential race conditions
-   - **Evidence**: `[app/document/[id].tsx](app/document/[id].tsx)`:
-     - Replaced the async `setInterval` with a cancellable `setTimeout` poll loop (next poll scheduled after the awaited DB read completes).
-     - Up to 15 attempts; overlap risk is removed by construction.
-   - **Why it’s inefficient**:
-     - `setInterval` does not wait for async completion, so it can create overlapping DB calls.
-     - Multiple re-renders/effect re-runs (dependency changes) could increase churn if cleanup timing differs.
-   - **Recommended fix**:
-     - Replace with a recursive `setTimeout` loop that schedules the next poll only after the previous one completes.
-     - Add an “abort/cancel” flag in cleanup to avoid state updates after unmount.
-   - **Tradeoffs / Risks**: Must keep polling UX identical; ensure cleanup works reliably.
-   - **Expected impact estimate**: Medium (reduces DB calls; less jank)
-   - **Removal Safety**: Likely Safe
-   - **Reuse Scope**: OCR polling logic in document editor
+   - **Evidence**: `app/document/[id].tsx`:
+     - Cancellable `setTimeout` loop (no async overlap).
+     - Adaptive backoff: 1 s → 2 s → 3 s intervals.
+   - **What was done**: Replaced `setInterval` with recursive `setTimeout`; adaptive backoff; cancel flag.
+   - **Expected impact**: Medium (fewer DB calls, no overlap)
 
-8. **Home screen tags query may fetch tags for docs not currently displayed**
-   - **Title (updated)**: Tag map effect respects `fileTypeFilter` before fetching tags
+8. **OCR multi-page progress: no user feedback during text extraction**
+   - **Status**: RESOLVED
+   - **Category**: Frontend / UX
+   - **Severity**: Medium
+   - **Impact**: perceived performance, user confidence during long operations
+   - **Evidence**: `app/capture.tsx`:
+     - OCR extraction phase (0–50% of bar): shows "Reading text: page X of Y" with a percent.
+     - Weak-page retry phase (50–60%): shows "Retrying N weak page(s)…"
+     - PDF generation phase (60–100%): shows chunk/merge/finalize progress.
+     - The long-operation overlay is shown immediately when OCR starts.
+   - **What was done**: Page-by-page progress messages + percent updates during OCR; rebased PDF progress to 60–100%.
+   - **Expected impact**: Medium (much better UX during multi-page scans)
+
+9. **Home screen tags query may fetch tags for docs not currently displayed**
+   - **Status**: RESOLVED
    - **Category**: I/O
    - **Severity**: Medium
    - **Impact**: DB query work, CPU, memory
-   - **Evidence**: `[app/(drawer)/index.tsx](app/(drawer)/index.tsx)`:
-     - `useEffect` now filters by the current `fileTypeFilter` before calling `getTagsForDocuments(ids)`.
-     - The effect dependency list includes `fileTypeFilter`, preventing stale/extra tag fetches.
-   - **Why it’s inefficient**:
-     - When users filter by file type, you still fetch tags for all docs in the selected category/search set.
-   - **Recommended fix**:
-     - Compute `displayedDocuments` earlier and use `displayedDocuments.map(d => d.id)` for tag fetches.
-     - Update the effect dependencies to include `fileTypeFilter`.
-   - **Tradeoffs / Risks**: More frequent fetches when `fileTypeFilter` changes, but typically far fewer than loading tags for all docs.
-   - **Expected impact estimate**: Medium
-   - **Removal Safety**: Safe
-   - **Reuse Scope**: dashboard list path
+   - **Evidence**: `app/(drawer)/index.tsx` — `useEffect` filters by `fileTypeFilter` before calling `getTagsForDocuments(ids)`.
+   - **What was done**: Tag fetch scoped to displayed documents only; `fileTypeFilter` in dependency array.
+   - **Expected impact**: Medium
+
+10. **Search result cap UX: user unaware results are truncated**
+    - **Status**: RESOLVED
+    - **Category**: Frontend / UX
+    - **Severity**: Medium
+    - **Impact**: discoverability, user trust
+    - **Evidence**:
+      - `store/app-store.ts` — `searchResultCapped` boolean set when `searchDocuments` returns exactly `SEARCH_LIMIT` (200) rows.
+      - `app/(drawer)/index.tsx` — informational banner: "Showing first N results. Refine your search for more."
+    - **What was done**: Added `searchResultCapped` state and a result-cap banner above the document list.
+    - **Expected impact**: Low-Medium (UX clarity)
 
 ---
 
 ### 3) Quick Wins (Do First)
 
-1. Implemented: debounce drawer search (no route replacement while typing) (`[components/layout/CustomDrawerContent.tsx](components/layout/CustomDrawerContent.tsx)`).
-2. Implemented: avoid redundant JS sorting when `sortBy === 'newest'` (`[store/app-store.ts](store/app-store.ts)`).
-3. Implemented: backup zip cache cleanup after sharing + sequential restore writes (`[services/BackupService.ts](services/BackupService.ts)`).
-4. Implemented: add minimal hot-path indexes in `initDb()` (`[db/schema.ts](db/schema.ts)`).
-5. Implemented: replace `PromptTemplateSheet` `ScrollView` with `FlatList` virtualization (`[components/ui/PromptTemplateSheet.tsx](components/ui/PromptTemplateSheet.tsx)`).
+All quick wins are implemented:
+
+1. Debounce drawer search (no route replacement while typing) — `components/layout/CustomDrawerContent.tsx`
+2. Avoid redundant JS sorting when `sortBy === 'newest'` — `store/app-store.ts`
+3. Backup zip cache cleanup after sharing + sequential restore writes — `services/BackupService.ts`
+4. Add hot-path indexes in `initDb()` — `db/schema.ts`
+5. Replace `PromptTemplateSheet` `ScrollView` with `FlatList` virtualization — `components/ui/PromptTemplateSheet.tsx`
+6. Precompute timestamps in `sortDocumentsBy` — `store/app-store.ts`
+7. Search result cap banner — `store/app-store.ts`, `app/(drawer)/index.tsx`
 
 ---
 
 ### 4) Deeper Optimizations (Do Next)
 
-1. Switch from `%LIKE%` search to SQLite FTS5:
-   - Create an FTS table for `title`, `notes`, and `ocr_text`.
-   - Keep it in sync via triggers or manual updates.
-   - Handle tag search via denormalization or a two-step query (find matching tag IDs -> filter documents).
-2. Already implemented: `searchDocuments()` now uses `EXISTS` (avoids `JOIN + DISTINCT` row explosion). Next step is FTS5 (below) for much faster `%LIKE%`-style substring matching.
-3. Add a search result limit (and optionally pagination) to cap worst-case UI freezes for large vaults.
-4. Harden `restoreFromBackup()`:
-   - sanitize zip entry names
-   - enforce safe archive write paths
-   - apply limited concurrency writes
-5. Next: reduce OCR polling work further (overlap is fixed already; consider adaptive backoff / longer intervals):
-   - longer poll intervals after the first few failures
-   - or a single “check after save” approach tied to known OCR completion signals (if available).
+All items from the original "Deeper Optimizations" list have been addressed:
+
+| Original recommendation | Status |
+|---|---|
+| FTS5 for `title/notes/ocr_text` | Implemented (`db/schema.ts`, `db/documents.ts`) |
+| `EXISTS` subquery for tag search | Implemented (`db/documents.ts`) |
+| Search result limit | Implemented (200-row cap + UX banner) |
+| Restore path sanitization + hardening | Implemented (`services/BackupService.ts`) |
+| OCR polling adaptive backoff | Implemented (`app/document/[id].tsx`) |
+| Backup pre-flight size/count check | Implemented (`services/BackupService.ts`) |
+| OCR multi-page progress | Implemented (`app/capture.tsx`) |
+
+**Future / remaining deeper optimizations:**
+
+1. **Stream-based backup/restore**: Replace in-memory Base64 zip with a streaming approach (requires native module or Expo FileSystem stream API) to eliminate the peak memory spike for very large archives.
+2. **Search pagination / infinite scroll**: Replace the hard 200-row LIMIT with cursor-based pagination so power users can scroll through thousands of results.
+3. **Background OCR + PDF via WorkManager**: Move heavy native OCR and PDF generation off the JS thread entirely (Android WorkManager / iOS BGTaskScheduler) for a fully non-blocking UX.
+4. **FTS5 column-filtered search**: When `includeOcr` is false, restrict the FTS5 `MATCH` to `{title notes}` columns only (currently falls back to LIKE for this case).
+5. **Tag denormalization in FTS**: Add tag names to the FTS index so tag search also benefits from token-based matching instead of `LIKE`.
 
 ---
 
@@ -230,216 +194,147 @@ Vault lock (UX / correctness, not search throughput): re-lock uses an AppState m
 Benchmarks (measure before/after):
 1. **Search latency**
    - Setup: generate a dataset of N documents (e.g., 100, 1k, 5k) with tags and OCR text.
-   - Measure: time from last keystroke to UI update (e.g., timestamp in `runSearch()` start/end and when `set({ documents: ... })` completes).
-   - Compare:
-     - current behavior
-     - debounced search (e.g., 250ms)
-     - indexed/FTS search (after schema changes)
+   - Measure: time from last keystroke to UI update (timestamp in `runSearch()` start/end).
+   - Compare: LIKE-only vs FTS5 MATCH; debounced vs non-debounced.
 2. **DB query timing**
-   - Add temporary timing around `searchDocuments()` query execution (local instrumentation).
+   - Add temporary timing around `searchDocuments()` query execution.
    - Track: p50/p95 query duration for typical queries (`"receipt"`, `"warranty"`, partial OCR term).
 3. **Backup/PDF memory and time**
-   - Setup: archive with increasing sizes (e.g., 50 docs, 200 docs) and mixed image/PDF.
-   - Measure on-device:
-     - end-to-end time for `createBackup()` and `shareSelectedDocuments()`
-     - memory peak (Android Studio Profiler: JS heap + native memory)
-     - cache directory growth (generated zip files count).
+   - Setup: archive with increasing sizes (50 docs, 200 docs, 500 docs).
+   - Measure: end-to-end time for `createBackup()`, memory peak (Android Studio Profiler), preflight gate behavior.
 4. **OCR polling behavior**
-   - Measure:
-     - number of DB reads during a typical OCR completion window
-     - time until OCR text appears in UI
-     - check for overlapping queries (use instrumentation counter).
+   - Measure: number of DB reads during a typical OCR completion window; time until OCR text appears in UI.
+5. **OCR multi-page progress UX**
+   - Verify: overlay appears immediately, page counter increments, percent bar reaches 100% at save completion.
 
 Profiling strategy:
-1. Android Studio Profiler:
-   - Memory heap growth during backup and PDF export.
-   - CPU spikes during search and sorting.
-2. React DevTools / performance overlay:
-   - confirm that modal opening and scrolling stays smooth after prompt sheet changes.
+1. Android Studio Profiler: memory heap growth during backup and PDF export; CPU spikes during search.
+2. React DevTools / performance overlay: confirm modal and scroll smoothness.
 
 Metrics to compare before/after:
-1. Search:
-   - JS time per keystroke (or after debounce)
-   - total number of DB calls during typing
-   - p95 query duration
-2. Backup/PDF:
-   - peak memory
-   - total time to complete
-   - leftover cache zip count
-3. OCR:
-   - DB read count
-   - UI update latency (OCR text becomes visible)
+- Search: JS time per keystroke, total DB calls during typing, p95 query duration.
+- Backup/PDF: peak memory, total time, leftover cache zip count.
+- OCR: DB read count, UI update latency.
 
 Test cases (correctness):
-1. Search:
-   - title matches, notes matches, tag matches, and OCR matches all still work.
-   - empty query returns to category/tag view.
-2. Sorting:
-   - `newest`, `oldest`, `expiring`, and `name` produce correct ordering for the same data.
-3. Backup/Restore:
-   - create backup -> restore on a clean state -> documents count and metadata match.
-   - restore with special zip entry names (ensure they are rejected/sanitized without breaking restore).
-4. OCR editor:
-   - after save, polling stops at success and stops at max attempts.
-   - no crashes on unmount/back navigation mid-poll.
+1. Search: title, notes, tag, and OCR matches all work; empty query returns to category/tag view; FTS5 fallback to LIKE works if FTS table is missing.
+2. Sorting: `newest`, `oldest`, `expiring`, `name` produce correct ordering.
+3. Backup/Restore: create → restore on clean state → documents match; preflight blocks oversized archives; restore rejects malicious zip entries.
+4. OCR editor: polling stops at success and at max attempts; no crashes on unmount.
+5. Search cap: banner appears when exactly 200 results returned; banner hidden when search is cleared.
 
 ---
 
-### 6) Optimized Code / Patch (when possible)
+### 6) Optimized Code / Patch
 
-The following snippets are patch-ready suggestions (some were implemented in this iteration; remaining suggestions focus on next-step refactors).
+All patches below have been implemented in the codebase. They are preserved here as reference.
 
-#### 6.1 Debounce drawer search + remove route replacement
-
-```tsx
-// In components/layout/CustomDrawerContent.tsx
-// Idea: debounce runSearch and remove router.replace on every keystroke.
-const searchDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-const handleSearch = (q: string) => {
-  setSearchQuery(q);
-
-  if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-  searchDebounceRef.current = setTimeout(() => {
-    runSearch(q);
-    // Remove: router.replace('/(drawer)')
-  }, 250);
-};
-
-// Optional: flush debounce on unmount
-React.useEffect(() => {
-  return () => {
-    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
-  };
-}, []);
-```
-
-#### 6.2 Avoid double-sorting on `newest`
-
-```ts
-// In store/app-store.ts (inside runSearch)
-const list = await searchDocuments(query, true);
-
-if (get().sortBy === 'newest') {
-  // searchDocuments already orders by updated_at DESC
-  set({ documents: list });
-  return;
-}
-
-const sorted = sortDocumentsBy(list, get().sortBy);
-set({ documents: sorted });
-```
-
-#### 6.3 Add supporting indexes (minimal, safe)
+#### 6.1 FTS5 virtual table + triggers (db/schema.ts)
 
 ```sql
--- In db/schema.ts initDb() (executed via database.execAsync)
-CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
-CREATE INDEX IF NOT EXISTS idx_documents_category_id ON documents(category_id);
-CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_tags(document_id);
-CREATE INDEX IF NOT EXISTS idx_document_tags_tag_id ON document_tags(tag_id);
--- tags.name may already be indexed due to UNIQUE, but this is harmless:
-CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+  title, notes, ocr_text,
+  content='documents', content_rowid='id'
+);
+
+-- Triggers: INSERT, DELETE, UPDATE keep FTS in sync
+CREATE TRIGGER documents_fts_ai AFTER INSERT ON documents BEGIN
+  INSERT INTO documents_fts(rowid, title, notes, ocr_text)
+  VALUES (new.id, new.title, new.notes, new.ocr_text);
+END;
+CREATE TRIGGER documents_fts_ad AFTER DELETE ON documents BEGIN
+  INSERT INTO documents_fts(documents_fts, rowid, title, notes, ocr_text)
+  VALUES ('delete', old.id, old.title, old.notes, old.ocr_text);
+END;
+CREATE TRIGGER documents_fts_au AFTER UPDATE ON documents BEGIN
+  INSERT INTO documents_fts(documents_fts, rowid, title, notes, ocr_text)
+  VALUES ('delete', old.id, old.title, old.notes, old.ocr_text);
+  INSERT INTO documents_fts(rowid, title, notes, ocr_text)
+  VALUES (new.id, new.title, new.notes, new.ocr_text);
+END;
+
+-- Populate from existing data
+INSERT INTO documents_fts(documents_fts) VALUES('rebuild');
 ```
 
-#### 6.4 Use EXISTS instead of JOIN+DISTINCT for tag match
-
-```sql
--- Replace the tag join section in searchDocuments()
--- Current pattern:
---   LEFT JOIN document_tags dt ...
---   LEFT JOIN tags t ...
---   WHERE ... OR t.name LIKE ?
--- With:
---   WHERE ... OR EXISTS (
---     SELECT 1 FROM document_tags dt
---     JOIN tags t ON t.id = dt.tag_id
---     WHERE dt.document_id = d.id AND t.name LIKE ?
---   )
-```
-
-#### 6.5 Prompt sheet: replace ScrollView with FlatList virtualization
-
-```tsx
-// In components/ui/PromptTemplateSheet.tsx
-// Replace ScrollView + templates.map(...) with FlatList.
-<FlatList
-  data={templates}
-  keyExtractor={(t) => t.id}
-  contentContainerStyle={styles.listContent}
-  renderItem={({ item: t }) => (
-    <View style={styles.card}>
-      {/* existing card UI */}
-    </View>
-  )}
-  initialNumToRender={12}
-  windowSize={7}
-  removeClippedSubviews
-/>
-```
-
-#### 6.6 Backup: delete generated zip files + limit size
+#### 6.2 FTS5 MATCH search with LIKE fallback (db/documents.ts)
 
 ```ts
-// In services/BackupService.ts after Sharing.shareAsync(zipPath)
-try {
-  await Sharing.shareAsync(zipPath, { mimeType: 'application/zip', dialogTitle: ... });
-} finally {
-  // Use LegacyFS.deleteAsync(zipPath, { idempotent: true }) or best available RN API
+function buildFtsMatchExpr(query: string): string {
+  const tokens = query
+    .replace(/['"*(){}[\]^~!@#$%&|\\:;,.?/<>+=]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0) return '';
+  return tokens.map((t) => `"${t}"*`).join(' OR ');
+}
+
+// In searchDocuments():
+const ftsExpr = buildFtsMatchExpr(query);
+if (ftsExpr) {
+  try {
+    return await db.getAllAsync<Document>(
+      `SELECT d.* FROM documents d
+       WHERE d.id IN (SELECT rowid FROM documents_fts WHERE documents_fts MATCH ?)
+         OR EXISTS (SELECT 1 FROM document_tags dt JOIN tags t ON t.id = dt.tag_id
+                    WHERE dt.document_id = d.id AND t.name LIKE ?)
+       ORDER BY d.updated_at DESC LIMIT ?`,
+      [ftsExpr, like, safeLimit]
+    );
+  } catch { /* fall through to LIKE */ }
 }
 ```
 
-#### 6.7 Restore: sanitize zip paths + limit concurrency
+#### 6.3 Backup preflight cap (services/BackupService.ts)
 
 ```ts
-// In services/BackupService.ts restoreFromBackup() archiveEntries loop:
-const safeDestUriForRelativePath = (relativePath: string) => {
-  // Because you write as `archive/${fileName}`, you should expect a single filename segment.
-  const normalized = relativePath.replace(/\\/g, '/');
-  if (!normalized || normalized.includes('..') || normalized.startsWith('/') || normalized.includes('/')) {
-    return null; // skip unsafe entries
-  }
-  return `${ARCHIVE_DIR}${normalized}`;
-};
-
-// Replace Promise.all(filePromises) with sequential or limited concurrency:
-for (const relativePath in /* zip archive entries collection */) {
-  const safeUri = safeDestUriForRelativePath(relativePath);
-  if (!safeUri) continue;
-  const base64Content = await file.async('base64');
-  await LegacyFS.writeAsStringAsync(safeUri, base64Content, { encoding: LegacyFS.EncodingType.Base64 });
+export async function preflightBackup(): Promise<BackupPreflightResult> {
+  // Scan archive dir for total bytes + file count
+  // Enforce: 100 MiB / 5000 files
+  // createBackup() calls preflight and throws if !ok
 }
 ```
 
-#### 6.8 OCR polling: replace setInterval with sequential setTimeout
+#### 6.4 Precomputed sort timestamps (store/app-store.ts)
 
 ```ts
-// In app/document/[id].tsx
-let cancelled = false;
-let attempts = 0;
-
-const poll = async () => {
-  if (cancelled) return;
-  attempts += 1;
-
-  const doc = await getDocumentById(docId);
-  const t = doc?.ocr_text;
-  if (t && t.trim().length > 0) {
-    setOcrText(t);
-    setOcrAwaiting(false);
-    return;
-  }
-  if (attempts >= 15) {
-    setOcrAwaiting(false);
-    return;
-  }
-
-  setTimeout(poll, 2000);
-};
-
-setOcrAwaiting(true);
-poll();
-
-return () => { cancelled = true; };
+case 'newest':
+case 'oldest': {
+  const stamped = docs.map((d) => ({ d, ms: new Date(d.updated_at).getTime() }));
+  stamped.sort((a, b) => (sortBy === 'newest' ? b.ms - a.ms : a.ms - b.ms));
+  return stamped.map((s) => s.d);
+}
 ```
 
+#### 6.5 Search result cap UX (store/app-store.ts + app/(drawer)/index.tsx)
+
+```ts
+// store: searchResultCapped boolean set when list.length >= SEARCH_LIMIT
+// index: banner with "Showing first N results. Refine your search for more."
+```
+
+#### 6.6 OCR page-by-page progress (app/capture.tsx)
+
+```ts
+// OCR phase (0-50%):
+setLongOpMessage(`Reading text: page ${pageIndex + 1} of ${totalPages}`);
+setLongOpPercent(Math.round((pageIndex / totalPages) * 50));
+
+// Retry phase (50-60%):
+setLongOpMessage(`Retrying ${weakPageIndexes.length} weak page(s)…`);
+
+// PDF phase (60-100%): rebased from previous 0-100
+const PDF_BASE_PCT = 60;
+```
+
+#### 6.7 Earlier patches (iteration 1, preserved for reference)
+
+- **Debounce drawer search**: 250 ms debounce, flush-on-unmount, empty-query fast path.
+- **EXISTS subquery**: Replaced `LEFT JOIN + DISTINCT` with `EXISTS` for tag matching.
+- **Hot-path indexes**: `documents(updated_at, category_id)`, `document_tags(document_id, tag_id)`, `tags(name)`.
+- **FlatList virtualization**: `PromptTemplateSheet` with `initialNumToRender`, `windowSize`, `removeClippedSubviews`.
+- **Backup cleanup**: `LegacyFS.deleteAsync(zipPath)` in `finally` blocks.
+- **Restore hardening**: `toSafeFilename()`, sequential writes, hard caps on all dimensions.
+- **OCR setTimeout loop**: Cancellable recursive poll with adaptive backoff.
+- **Filtered tag fetch**: `fileTypeFilter` scoping before `getTagsForDocuments()`.
+- **Skip newest sort**: `runSearch` bypasses `sortDocumentsBy` when `sortBy === 'newest'`.

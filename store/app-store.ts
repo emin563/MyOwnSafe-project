@@ -43,7 +43,12 @@ import { maybeUploadVaultDocumentToGoogleDrive } from '@/services/GoogleDriveSyn
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
 import { getFreeLimit, getOcrReadTrialsRemaining, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
 import { LimitError } from '@/services/LimitError';
-import { authFlags } from '@/store/auth-flags';
+import {
+  purchasePro as rcPurchasePro,
+  restorePurchases as rcRestorePurchases,
+  checkProEntitlement,
+} from '@/services/PurchaseService';
+
 type AppStore = {
   categories: Category[];
   documents: Document[];
@@ -51,6 +56,7 @@ type AppStore = {
   selectedCategoryId: number | null;
   selectedTagId: number | null;
   searchQuery: string;
+  searchResultCapped: boolean;
   sortBy: 'newest' | 'oldest' | 'expiring' | 'name';
 
   // Bulk selection (transient)
@@ -61,11 +67,6 @@ type AppStore = {
   selectAll: () => void;
   clearSelection: () => void;
   isDbReady: boolean;
-
-  // Security
-  isUnlocked: boolean;
-  pinEnabled: boolean;
-  pinHash: string | null;
 
   // Pro
   isPro: boolean;
@@ -131,8 +132,6 @@ type AppStore = {
   setSelectedTagId: (id: number | null) => void;
   setSortBy: (sort: 'newest' | 'oldest' | 'expiring' | 'name') => void;
 
-  setUnlocked: (unlocked: boolean) => void;
-
   loadCategories: () => Promise<void>;
   addCategory: (name: string, iconName?: string) => Promise<void>;
   editCategory: (id: number, name: string, iconName?: string) => Promise<void>;
@@ -173,13 +172,19 @@ type AppStore = {
 
   // Settings
   loadSettings: () => Promise<void>;
-  setPinEnabled: (enabled: boolean, pin?: string) => Promise<void>;
-  verifyPin: (input: string) => boolean;
   setIsPro: (value: boolean) => Promise<void>;
+  /** Trigger a real RevenueCat purchase and update Pro state on success. */
+  purchasePro: () => Promise<{ success: boolean; cancelled?: boolean; message?: string }>;
+  /** Restore a previous purchase via RevenueCat. */
+  restorePro: () => Promise<{ success: boolean; message?: string }>;
+  /** Check RevenueCat entitlements and sync local Pro state. */
+  syncProStatus: () => Promise<void>;
 
   setPendingBulkImports: (items: { fileUri: string; fileType: FileType; name?: string }[]) => void;
   clearPendingBulkImports: () => void;
 };
+
+let _ocrTrialLock = false;
 
 export const useAppStore = create<AppStore>((set, get) => ({
   categories: [],
@@ -188,14 +193,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   selectedCategoryId: null,
   selectedTagId: null,
   searchQuery: '',
+  searchResultCapped: false,
   sortBy: 'newest',
   selectionMode: false,
   selectedIds: [],
 
   isDbReady: false,
-  isUnlocked: false,
-  pinEnabled: false,
-  pinHash: null,
   isPro: false,
   firstLaunchAt: null,
   isIntroEligible: false,
@@ -235,16 +238,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   clearSelection: () => set({ selectionMode: false, selectedIds: [] }),
 
-  setUnlocked: (unlocked) => {
-    if (unlocked) {
-      authFlags.beginVaultPostInteractionGrace();
-    }
-    set({ isUnlocked: unlocked });
-  },
-
   loadSettings: async () => {
-    const pinEnabledVal = await getSetting('pinEnabled');
-    const pinHash = await getSetting('pinHash');
     const proVal = await getSetting('isPro');
     const firstLaunchAtVal = await getSetting('firstLaunchAt');
     const vaultNameVal = await getSetting('vaultName');
@@ -257,7 +251,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const ocrProcessingModeVal = await getSetting('ocrProcessingMode');
     const ocrLanguageVal = await getSetting('ocrLanguage');
     const mlKitScannerModeVal = await getSetting('mlKitScannerMode');
-    const pinEnabled = pinEnabledVal === 'true';
     const isPro = proVal === 'true';
     const savedVaultName = (vaultNameVal ?? '').trim();
     const vaultName = savedVaultName || 'My Vault';
@@ -286,16 +279,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
     const isIntroEligible = now - firstLaunchAt < SEVEN_DAYS_MS;
-    const lockActive = pinEnabled;
     if (!savedVaultName) {
       await setSetting('vaultName', vaultName);
     }
-    if (!lockActive) {
-      authFlags.beginVaultPostInteractionGrace();
-    }
     set({
-      pinEnabled,
-      pinHash,
       isPro,
       firstLaunchAt,
       isIntroEligible,
@@ -309,8 +296,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ocrLanguage,
       mlKitScannerMode,
       ocrReadTrialsUsed,
-      isUnlocked: !lockActive,
     });
+
+    checkProEntitlement().then((entitled) => {
+      if (entitled !== get().isPro) {
+        setSetting('isPro', String(entitled));
+        set({ isPro: entitled });
+      }
+    }).catch(() => {});
   },
 
   setVaultName: async (name) => {
@@ -325,28 +318,34 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ vaultNamePromptVisible: false });
   },
 
-  setPinEnabled: async (enabled, pin) => {
-    if (enabled && pin) {
-      await setSetting('pinHash', pin);
-      await setSetting('pinEnabled', 'true');
-      set({ pinEnabled: true, pinHash: pin, isUnlocked: true });
-      authFlags.beginVaultPostInteractionGrace();
-    } else {
-      await setSetting('pinEnabled', 'false');
-      await setSetting('pinHash', '');
-      set({ pinEnabled: false, pinHash: null, isUnlocked: true });
-      authFlags.beginVaultPostInteractionGrace();
-    }
-  },
-
-  verifyPin: (input) => {
-    const { pinHash } = get();
-    return pinHash !== null && input === pinHash;
-  },
-
   setIsPro: async (value) => {
+    if (!__DEV__) return;
     await setSetting('isPro', String(value));
     set({ isPro: value });
+  },
+
+  purchasePro: async () => {
+    const result = await rcPurchasePro();
+    if (result.success) {
+      await setSetting('isPro', 'true');
+      set({ isPro: true });
+    }
+    return result;
+  },
+
+  restorePro: async () => {
+    const result = await rcRestorePurchases();
+    if (result.success) {
+      await setSetting('isPro', 'true');
+      set({ isPro: true });
+    }
+    return result;
+  },
+
+  syncProStatus: async () => {
+    const entitled = await checkProEntitlement();
+    await setSetting('isPro', String(entitled));
+    set({ isPro: entitled });
   },
 
   setOcrExtractOnCapture: async (enabled) => {
@@ -358,18 +357,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   clearPendingOcrText: () => set({ pendingOcrText: null }),
 
   consumeOcrReadTrial: async () => {
-    // Pro does not cap OCR reads.
     if (get().isPro) return true;
-    const usedBefore = get().ocrReadTrialsUsed;
-    const remaining = getOcrReadTrialsRemaining(usedBefore, get().firstLaunchAt);
-    if (remaining <= 0) return false;
-    const next = usedBefore + 1;
-    await setSetting('ocrReadTrialsUsed', String(next));
-    set({ ocrReadTrialsUsed: next });
-    return true;
+    if (_ocrTrialLock) return false;
+    _ocrTrialLock = true;
+    try {
+      const usedBefore = get().ocrReadTrialsUsed;
+      const remaining = getOcrReadTrialsRemaining(usedBefore, get().firstLaunchAt);
+      if (remaining <= 0) return false;
+      const next = usedBefore + 1;
+      await setSetting('ocrReadTrialsUsed', String(next));
+      set({ ocrReadTrialsUsed: next });
+      return true;
+    } finally {
+      _ocrTrialLock = false;
+    }
   },
 
   resetOcrReadTrialsForDev: async () => {
+    if (!__DEV__) return;
     await setSetting('ocrReadTrialsUsed', '0');
     set({ ocrReadTrialsUsed: 0 });
     get().showToast('OCR free trials reset (dev)', 'success');
@@ -710,18 +715,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   runSearch: async (query) => {
     if (!query.trim()) {
+      set({ searchResultCapped: false });
       await get().loadDocuments();
       return;
     }
-    const list = await searchDocuments(query, true);
+    const SEARCH_LIMIT = 200;
+    const list = await searchDocuments(query, true, SEARCH_LIMIT);
+    const capped = list.length >= SEARCH_LIMIT;
     const sortBy = get().sortBy;
-    // searchDocuments already orders by updated_at DESC; avoid extra JS sort for "newest".
     if (sortBy === 'newest') {
-      set({ documents: list });
+      set({ documents: list, searchResultCapped: capped });
       return;
     }
     const sorted = sortDocumentsBy(list, sortBy);
-    set({ documents: sorted });
+    set({ documents: sorted, searchResultCapped: capped });
   },
 }));
 
@@ -729,23 +736,23 @@ function sortDocumentsBy(
   docs: Document[],
   sortBy: 'newest' | 'oldest' | 'expiring' | 'name'
 ): Document[] {
-  const copy = [...docs];
+  if (docs.length <= 1) return [...docs];
   switch (sortBy) {
     case 'newest':
-      return copy.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-    case 'oldest':
-      return copy.sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+    case 'oldest': {
+      const stamped = docs.map((d) => ({ d, ms: new Date(d.updated_at).getTime() }));
+      stamped.sort((a, b) => (sortBy === 'newest' ? b.ms - a.ms : a.ms - b.ms));
+      return stamped.map((s) => s.d);
+    }
     case 'name':
-      return copy.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
-    case 'expiring': {
-      const now = new Date().toISOString().slice(0, 10);
-      return copy.sort((a, b) => {
+      return [...docs].sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+    case 'expiring':
+      return [...docs].sort((a, b) => {
         const aExp = a.expiry_date ?? '9999-12-31';
         const bExp = b.expiry_date ?? '9999-12-31';
         return aExp.localeCompare(bExp);
       });
-    }
     default:
-      return copy;
+      return [...docs];
   }
 }

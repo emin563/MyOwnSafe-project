@@ -1,5 +1,5 @@
 import { GoogleDriveBackupSection } from '@/components/settings/GoogleDriveBackupSection';
-import { PaywallModal, QuizWhyPro } from '@/components/ui';
+import { PaywallModal, ProIncludedFeatureDialog, QuizWhyPro } from '@/components/ui';
 import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
 import { createBackup, restoreFromBackup } from '@/services/BackupService';
 import { cancelAllNotifications } from '@/services/NotificationService';
@@ -71,6 +71,10 @@ export default function SettingsScreen() {
 
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
+  const [dataPortabilityProDialogVisible, setDataPortabilityProDialogVisible] = useState(false);
+  const [pendingDataPortabilityAction, setPendingDataPortabilityAction] = useState<
+    'backup' | 'restore' | 'drive' | null
+  >(null);
   const [premiumExpanded, setPremiumExpanded] = useState(false);
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
@@ -130,7 +134,8 @@ export default function SettingsScreen() {
 
   const handleBackup = async () => {
     if (!isPro) {
-      setPaywallVisible(true);
+      setPendingDataPortabilityAction('backup');
+      setDataPortabilityProDialogVisible(true);
       return;
     }
     setBackupLoading(true);
@@ -149,7 +154,8 @@ export default function SettingsScreen() {
 
   const handleRestore = async () => {
     if (!isPro) {
-      setPaywallVisible(true);
+      setPendingDataPortabilityAction('restore');
+      setDataPortabilityProDialogVisible(true);
       return;
     }
     Alert.alert(
@@ -385,7 +391,7 @@ export default function SettingsScreen() {
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>App Locking</Text>
               <Text style={styles.rowHint}>
-                Secure Vault using your device's built-in App Lock, Secure Folder, or Private Space feature.
+                Secure Vault using your device&apos;s built-in App Lock, Secure Folder, or Private Space feature.
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -575,7 +581,10 @@ export default function SettingsScreen() {
 
           <GoogleDriveBackupSection
             isPro={isPro}
-            onRequestPro={() => setPaywallVisible(true)}
+            onRequestPro={() => {
+              setPendingDataPortabilityAction('drive');
+              setDataPortabilityProDialogVisible(true);
+            }}
           />
         </View>
 
@@ -1065,12 +1074,30 @@ export default function SettingsScreen() {
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
         onUpgrade={() => {
-          setIsPro(true);
           setPaywallVisible(false);
         }}
         onRestore={() => {
-          setIsPro(true);
           setPaywallVisible(false);
+        }}
+      />
+
+      <ProIncludedFeatureDialog
+        visible={dataPortabilityProDialogVisible}
+        onClose={() => {
+          setDataPortabilityProDialogVisible(false);
+          setPendingDataPortabilityAction(null);
+        }}
+        featureDescription="Create and restore full vault backups (zip export), plus optional Google Drive backup (Android). Unlock Pro to use these data portability features."
+        onUpgrade={async () => {
+          setDataPortabilityProDialogVisible(false);
+          const action = pendingDataPortabilityAction;
+          setPendingDataPortabilityAction(null);
+          // After successful purchase/restore (handled inside PaywallModal), retry the action if relevant.
+          if (action === 'backup') {
+            await handleBackup();
+          } else if (action === 'restore') {
+            await handleRestore();
+          }
         }}
       />
       <Modal

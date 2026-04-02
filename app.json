@@ -47,7 +47,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO"
+        "com.android.vending.BILLING"
       ],
       "package": "com.gundogdu.myownsafe"
     },
@@ -107,7 +107,8 @@
       "googleDriveOAuth": {
         "androidClientId": "655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn.apps.googleusercontent.com",
         "webClientId": ""
-      }
+      },
+      "revenueCatApiKey": "goog_EspDccWEYuIIcTJnqcnagnmgUAz"
     }
   }
 }

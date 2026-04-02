@@ -58,6 +58,44 @@ type BackupManifest = {
   documents: Document[];
 };
 
+// ─── Backup creation limits ─────────────────────────────────────────────
+const MAX_BACKUP_CREATE_BYTES = 100 * 1024 * 1024; // 100 MiB
+const MAX_BACKUP_CREATE_FILES = 5000;
+
+export type BackupPreflightResult = {
+  ok: boolean;
+  totalBytes: number;
+  fileCount: number;
+  reason?: string;
+};
+
+/**
+ * Quick pre-flight check before building a backup zip.
+ * Returns estimated archive size and file count so the UI can warn the user.
+ */
+export async function preflightBackup(): Promise<BackupPreflightResult> {
+  let totalBytes = 0;
+  let fileCount = 0;
+  const archiveInfo = await LegacyFS.getInfoAsync(ARCHIVE_DIR);
+  if (archiveInfo.exists) {
+    const names = await LegacyFS.readDirectoryAsync(ARCHIVE_DIR);
+    fileCount = names.length;
+    for (const name of names) {
+      const info = await LegacyFS.getInfoAsync(`${ARCHIVE_DIR}${name}`).catch(() => null);
+      if (info?.exists && 'size' in info && typeof info.size === 'number') {
+        totalBytes += info.size;
+      }
+    }
+  }
+  if (totalBytes > MAX_BACKUP_CREATE_BYTES) {
+    return { ok: false, totalBytes, fileCount, reason: `Archive is ~${Math.round(totalBytes / 1024 / 1024)} MiB which exceeds the ${MAX_BACKUP_CREATE_BYTES / 1024 / 1024} MiB backup limit.` };
+  }
+  if (fileCount > MAX_BACKUP_CREATE_FILES) {
+    return { ok: false, totalBytes, fileCount, reason: `Archive has ${fileCount} files which exceeds the ${MAX_BACKUP_CREATE_FILES} file backup limit.` };
+  }
+  return { ok: true, totalBytes, fileCount };
+}
+
 // ─── Backup ────────────────────────────────────────────────────────────────
 
 /**
@@ -67,6 +105,11 @@ type BackupManifest = {
  * Opens the native share sheet so the user can save the zip anywhere.
  */
 export async function createBackup(): Promise<void> {
+  const preflight = await preflightBackup();
+  if (!preflight.ok) {
+    throw new Error(preflight.reason ?? 'Backup too large.');
+  }
+
   const db = await getDb();
   const zip = new JSZip();
 
@@ -207,33 +250,9 @@ export async function restoreFromBackup(): Promise<boolean> {
     return name;
   };
 
-  // 3. Restore SQLite — wipe existing data and re-insert from manifest
-  const db = await getDb();
-  await db.execAsync('DELETE FROM documents; DELETE FROM categories;');
-
-  const restoredCategoryIds = new Set<number>();
-  for (const cat of manifest.categories) {
-    const catId = typeof cat.id === 'number' && Number.isSafeInteger(cat.id) && cat.id > 0 ? cat.id : null;
-    const catName = typeof cat.name === 'string' ? cat.name.slice(0, 200) : null;
-    const iconName = typeof cat.icon_name === 'string' ? cat.icon_name.slice(0, 200) : null;
-    if (catId == null || !catName || !iconName) continue;
-
-    restoredCategoryIds.add(catId);
-    await db.runAsync(
-      'INSERT OR REPLACE INTO categories (id, name, icon_name, created_at) VALUES (?, ?, ?, ?)',
-      [
-        catId,
-        catName,
-        iconName,
-        typeof cat.created_at === 'string' ? cat.created_at.slice(0, 200) : new Date().toISOString(),
-      ]
-    );
-  }
-
-  // 4. Restore archive media files
+  // 3. Restore archive media files first (outside transaction — file I/O is not transactional).
   await LegacyFS.makeDirectoryAsync(ARCHIVE_DIR, { intermediates: true });
 
-  // Clear existing archive files first
   const existingFiles = await LegacyFS.readDirectoryAsync(ARCHIVE_DIR).catch(() => []);
   for (const file of existingFiles) {
     await LegacyFS.deleteAsync(`${ARCHIVE_DIR}${file}`, { idempotent: true });
@@ -248,13 +267,12 @@ export async function restoreFromBackup(): Promise<boolean> {
       if (file.dir) return;
       const safeName = toSafeFilename(relativePath);
       if (!safeName) return;
-      // Hard per-file cap: prevents single-entry bombs from OOM.
       const uncompressedSize = (file as any)?._data?.uncompressedSize;
       if (typeof uncompressedSize === 'number' && uncompressedSize > 30 * 1024 * 1024) {
         return;
       }
 
-      if (safeArchiveNames.has(safeName)) return; // de-dupe by basename
+      if (safeArchiveNames.has(safeName)) return;
       safeArchiveNames.add(safeName);
       filesToWrite.push({ safeName, file });
     });
@@ -263,10 +281,8 @@ export async function restoreFromBackup(): Promise<boolean> {
       throw new Error('Invalid backup file: too many archive entries.');
     }
 
-    // Write sequentially to avoid a large concurrent base64/IO memory spike.
     for (const entry of filesToWrite) {
       const destUri = `${ARCHIVE_DIR}${entry.safeName}`;
-
       const base64Content = await entry.file.async('base64');
       await LegacyFS.writeAsStringAsync(destUri, base64Content, {
         encoding: LegacyFS.EncodingType.Base64,
@@ -274,50 +290,73 @@ export async function restoreFromBackup(): Promise<boolean> {
     }
   }
 
-  // 5. Restore documents using only archive filenames present in the zip.
-  //    This prevents manifest.json from pointing file_uri at arbitrary device paths.
-  for (const doc of manifest.documents) {
-    const docId = typeof doc.id === 'number' && Number.isSafeInteger(doc.id) && doc.id > 0 ? doc.id : null;
-    const safeNameFromManifest = toSafeFilename(doc.file_uri);
-    const fileType = typeof doc.file_type === 'string' ? (doc.file_type as FileType) : null;
-    const title = typeof doc.title === 'string' ? doc.title.slice(0, 500) : null;
+  // 4. Restore SQLite in a transaction — atomic: all-or-nothing DB state.
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.execAsync('DELETE FROM document_tags; DELETE FROM documents; DELETE FROM categories;');
 
-    if (docId == null || !safeNameFromManifest || !title) continue;
-    if (!safeArchiveNames.has(safeNameFromManifest)) continue;
-    if (!fileType || !ALLOWED_FILE_TYPES.has(fileType)) continue;
+    const restoredCategoryIds = new Set<number>();
+    for (const cat of manifest.categories) {
+      const catId = typeof cat.id === 'number' && Number.isSafeInteger(cat.id) && cat.id > 0 ? cat.id : null;
+      const catName = typeof cat.name === 'string' ? cat.name.slice(0, 200) : null;
+      const iconName = typeof cat.icon_name === 'string' ? cat.icon_name.slice(0, 200) : null;
+      if (catId == null || !catName || !iconName) continue;
 
-    const categoryId =
-      typeof doc.category_id === 'number' && Number.isSafeInteger(doc.category_id) && restoredCategoryIds.has(doc.category_id)
-        ? doc.category_id
-        : null;
+      restoredCategoryIds.add(catId);
+      await db.runAsync(
+        'INSERT OR REPLACE INTO categories (id, name, icon_name, created_at) VALUES (?, ?, ?, ?)',
+        [
+          catId,
+          catName,
+          iconName,
+          typeof cat.created_at === 'string' ? cat.created_at.slice(0, 200) : new Date().toISOString(),
+        ]
+      );
+    }
 
-    const purchasePrice = typeof doc.purchase_price === 'number' && Number.isFinite(doc.purchase_price) ? doc.purchase_price : null;
-    const expiryDate =
-      typeof doc.expiry_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(doc.expiry_date) ? doc.expiry_date : null;
-    const notes = typeof doc.notes === 'string' ? doc.notes.slice(0, 20000) : null;
+    for (const doc of manifest.documents) {
+      const docId = typeof doc.id === 'number' && Number.isSafeInteger(doc.id) && doc.id > 0 ? doc.id : null;
+      const safeNameFromManifest = toSafeFilename(doc.file_uri);
+      const fileType = typeof doc.file_type === 'string' ? (doc.file_type as FileType) : null;
+      const title = typeof doc.title === 'string' ? doc.title.slice(0, 500) : null;
 
-    const createdAt = typeof doc.created_at === 'string' ? doc.created_at.slice(0, 200) : new Date().toISOString();
-    const updatedAt = typeof doc.updated_at === 'string' ? doc.updated_at.slice(0, 200) : new Date().toISOString();
+      if (docId == null || !safeNameFromManifest || !title) continue;
+      if (!safeArchiveNames.has(safeNameFromManifest)) continue;
+      if (!fileType || !ALLOWED_FILE_TYPES.has(fileType)) continue;
 
-    await db.runAsync(
-      `INSERT OR REPLACE INTO documents
-         (id, category_id, title, file_uri, file_type, purchase_price, expiry_date, notes, notification_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        docId,
-        categoryId,
-        title,
-        `${ARCHIVE_DIR}${safeNameFromManifest}`,
-        fileType,
-        purchasePrice,
-        expiryDate,
-        notes,
-        null, // notification_ids are rescheduled fresh after restore
-        createdAt,
-        updatedAt,
-      ]
-    );
-  }
+      const categoryId =
+        typeof doc.category_id === 'number' && Number.isSafeInteger(doc.category_id) && restoredCategoryIds.has(doc.category_id)
+          ? doc.category_id
+          : null;
+
+      const purchasePrice = typeof doc.purchase_price === 'number' && Number.isFinite(doc.purchase_price) ? doc.purchase_price : null;
+      const expiryDate =
+        typeof doc.expiry_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(doc.expiry_date) ? doc.expiry_date : null;
+      const notes = typeof doc.notes === 'string' ? doc.notes.slice(0, 20000) : null;
+
+      const createdAt = typeof doc.created_at === 'string' ? doc.created_at.slice(0, 200) : new Date().toISOString();
+      const updatedAt = typeof doc.updated_at === 'string' ? doc.updated_at.slice(0, 200) : new Date().toISOString();
+
+      await db.runAsync(
+        `INSERT OR REPLACE INTO documents
+           (id, category_id, title, file_uri, file_type, purchase_price, expiry_date, notes, notification_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          docId,
+          categoryId,
+          title,
+          `${ARCHIVE_DIR}${safeNameFromManifest}`,
+          fileType,
+          purchasePrice,
+          expiryDate,
+          notes,
+          null,
+          createdAt,
+          updatedAt,
+        ]
+      );
+    }
+  });
 
   return true;
 }
@@ -344,6 +383,7 @@ export async function shareSelectedDocuments(
   const manifest: SelectedManifestEntry[] = [];
 
   for (const doc of documents) {
+    if (!doc.file_uri.startsWith(ARCHIVE_DIR)) continue;
     const fileName = doc.file_uri.split('/').pop() ?? `doc_${doc.id}`;
     const categoryName = categories.find((c) => c.id === doc.category_id)?.name ?? null;
     manifest.push({

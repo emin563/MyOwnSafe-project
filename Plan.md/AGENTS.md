@@ -6,18 +6,18 @@
 - **Stack:** Expo SDK 54, React Native, Expo Router (file-based), TypeScript. Dark theme; primary accent `#10a37f` (teal).
 
 ## Folder structure (concise)
-- `app/` — Expo Router: `_layout.tsx` (root, lock + DB bootstrap), `(drawer)/` (drawer + index), `capture.tsx`, `document/[id].tsx`, `settings.tsx`.
+- `app/` — Expo Router: `_layout.tsx` (root, lock + DB + RevenueCat bootstrap), `(drawer)/` (drawer + index), `capture.tsx`, `document/[id].tsx`, `settings.tsx`, `app-locking-info.tsx` (step-by-step guide for Android system app locks).
 - `components/` — `ui/` (PaywallModal, QuizWhyPro, InputModal, ConfirmModal, PillButton, …), `layout/CustomDrawerContent.tsx`, `document/DocumentCard.tsx`, `security/LockScreen.tsx`, `settings/` (`GoogleDriveBackupSection`, `GoogleDriveOAuthPanel`, `googleDriveBackup.styles`).
-- `config/` — `googleDrive.ts` reads `expo.extra.googleDriveOAuth` (Android/Web OAuth client IDs for Drive).
-- `store/app-store.ts` — Zustand: categories, documents, isPro, PIN lock (`pinEnabled`, `pinHash`, `isUnlocked`), loadSettings, loadDocuments, addDocument, etc.
+- `config/` — `googleDrive.ts` reads `expo.extra.googleDriveOAuth` (Android/Web OAuth client IDs for Drive). `revenueCat.ts` reads `expo.extra.revenueCatApiKey` and exports the entitlement ID (`pro_access`).
+- `store/app-store.ts` — Zustand: categories, documents, isPro, PIN lock (`pinEnabled`, `pinHash`, `isUnlocked`), `purchasePro`, `restorePro`, `syncProStatus`, loadSettings, loadDocuments, addDocument, etc.
 - `store/auth-flags.ts` — Vault minimize timer: `MIN_MINIMIZED_MS_FOR_VAULT_LOCK`, post-unlock grace (`beginVaultPostInteractionGrace`), `systemPickerOpen`, `withExternalActivityGuard()` for pickers/share.
 - `services/vaultLockPolicy.ts` — `shouldArmVaultMinimizeTimer()` (gates when AppState “background” starts the away timer).
 - `db/` — schema, settings, documents, categories, types. SQLite: `documents` (file_uri, purchase_price, expiry_date, notification_id), `categories` (icon_name), `settings` (key/value).
-- `services/` — BackupService (jszip + optional Drive upload hook), GoogleDriveSync (OAuth tokens, Drive folder, upload), `mlKitDocumentScan(.android).ts` + `mlKitDocumentScan.types.ts`, NotificationService, PdfService, StorageService, `ocrExtract.ts`, etc.
+- `services/` — BackupService (jszip + optional Drive upload hook), GoogleDriveSync (OAuth tokens, Drive folder, upload), `mlKitDocumentScan(.android).ts` + `mlKitDocumentScan.types.ts`, NotificationService, PdfService, `PurchaseService.ts` (RevenueCat wrapper), StorageService, `ocrExtract.ts`, etc.
 - `theme/` — Colors, Spacing, Typography, Radius.
 
 ## Current behaviour (as implemented today)
-- **Pro / paywall:** Pro state is stored in the app store and in `db/settings` (e.g. `isPro`). PaywallModal offers upgrade and restore actions; limits (e.g. file count, category count) can trigger the paywall. Monetisation and IAP are not yet integrated; the UI and state are in place to support future integration.
+- **Pro / paywall / In-App Purchase:** Pro state is stored in the app store and in `db/settings` (`isPro`). **RevenueCat** (`react-native-purchases`) is integrated: `PurchaseService.ts` wraps configure, purchase, restore, and entitlement checks. `PaywallModal` triggers a real Google Play purchase sheet via `purchasePro()` and always shows a "Restore" button via `restorePro()`. On app launch, `loadSettings()` silently checks RevenueCat entitlements in the background and syncs local Pro state. API key is read from `app.json > extra.revenueCatApiKey`; entitlement ID is `pro_access`. `com.android.vending.BILLING` permission is declared in `app.json`. A native rebuild is required after adding the SDK.
 - **AI optional workflow ("Use AI")**: Vault does not do any built-in AI processing. Users can copy a curated prompt (with placeholders like `{docTitle}`, `{docType}`, `{categoryName}`) and then share the document using an in-app AI destination picker (ChatGPT/Gemini/Claude/Copilot) with a "More…" fallback to the system share sheet. A privacy note is shown near the share step.
 - **Prompt library gating:** In the Prompt Library, **each category has exactly 1 Free prompt**; all other prompts in that category are **Pro** and will open the paywall if the user tries to copy/continue.
 - **OCR (text extraction):** “Text from photo” is opt-in (Add → Camera / Import). Extracted OCR text is stored on the document and indexed for search.

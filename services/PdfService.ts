@@ -136,18 +136,27 @@ export async function createPdfFromImages(
   return mergedUri;
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function buildHtmlTemplate(doc: Document, categoryName: string | undefined, imageBase64: string | null): string {
   const priceRow = doc.purchase_price != null
-    ? `<tr><td class="label">Purchase Price</td><td>$${doc.purchase_price.toFixed(2)}</td></tr>`
+    ? `<tr><td class="label">Purchase Price</td><td>$${escapeHtml(doc.purchase_price.toFixed(2))}</td></tr>`
     : '';
   const expiryRow = doc.expiry_date
-    ? `<tr><td class="label">Expiry Date</td><td>${doc.expiry_date}</td></tr>`
+    ? `<tr><td class="label">Expiry Date</td><td>${escapeHtml(doc.expiry_date)}</td></tr>`
     : '';
   const categoryRow = categoryName
-    ? `<tr><td class="label">Category</td><td>${categoryName}</td></tr>`
+    ? `<tr><td class="label">Category</td><td>${escapeHtml(categoryName)}</td></tr>`
     : '';
   const notesRow = doc.notes
-    ? `<tr><td class="label">Notes</td><td style="white-space:pre-wrap">${doc.notes}</td></tr>`
+    ? `<tr><td class="label">Notes</td><td style="white-space:pre-wrap">${escapeHtml(doc.notes)}</td></tr>`
     : '';
 
   const imageHtml = imageBase64 && doc.file_type === 'image'
@@ -271,7 +280,7 @@ function buildHtmlTemplate(doc: Document, categoryName: string | undefined, imag
     <span class="brand-label">Secure Document Archive</span>
   </div>
 
-  <h1>${doc.title}</h1>
+  <h1>${escapeHtml(doc.title)}</h1>
 
   ${imageHtml}
 
@@ -307,7 +316,8 @@ export async function exportDocumentAsPdf(
 ): Promise<void> {
   let imageBase64: string | null = null;
 
-  if (doc.file_type === 'image' && doc.file_uri) {
+  const archivePrefix = `${LegacyFS.documentDirectory}archive/`;
+  if (doc.file_type === 'image' && doc.file_uri && doc.file_uri.startsWith(archivePrefix)) {
     try {
       imageBase64 = await LegacyFS.readAsStringAsync(doc.file_uri, {
         encoding: LegacyFS.EncodingType.Base64,
@@ -324,14 +334,18 @@ export async function exportDocumentAsPdf(
     base64: false,
   });
 
-  const canShare = await Sharing.isAvailableAsync();
-  if (canShare) {
-    await withExternalActivityGuard(() =>
-      Sharing.shareAsync(pdfUri, {
-        mimeType: 'application/pdf',
-        UTI: 'com.adobe.pdf',
-        dialogTitle: `Export "${doc.title}"`,
-      })
-    );
+  try {
+    const canShare = await Sharing.isAvailableAsync();
+    if (canShare) {
+      await withExternalActivityGuard(() =>
+        Sharing.shareAsync(pdfUri, {
+          mimeType: 'application/pdf',
+          UTI: 'com.adobe.pdf',
+          dialogTitle: `Export "${doc.title}"`,
+        })
+      );
+    }
+  } finally {
+    try { await LegacyFS.deleteAsync(pdfUri, { idempotent: true }); } catch {}
   }
 }

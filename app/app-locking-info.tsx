@@ -62,7 +62,7 @@ export default function AppLockingInfoScreen() {
           </View>
           <Text style={styles.heroTitle}>Locking your Vault</Text>
           <Text style={styles.heroSubtitle}>
-            How to secure your documents with your fingerprint, face, or device PIN using Android's native features.
+            How to secure your documents with your fingerprint, face, or device PIN using Android&apos;s native features.
           </Text>
         </View>
 

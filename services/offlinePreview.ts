@@ -28,6 +28,65 @@ export function docxXmlToPlainText(xml: string): string {
   return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/** Remove table subtrees so body text does not duplicate table cell content (tables rendered separately). */
+function stripDocxTables(xml: string): string {
+  return xml.replace(/<w:tbl\b[^>]*>[\s\S]*?<\/w:tbl>/gi, '\n');
+}
+
+/**
+ * Extract each table as tab-separated rows (like CSV in Excel preview).
+ * Mirrors the spreadsheet preview style: monospace-friendly columns.
+ */
+function docxTablesToPlainSections(xml: string): string[] {
+  const sections: string[] = [];
+  const tblRegex = /<w:tbl\b[^>]*>([\s\S]*?)<\/w:tbl>/gi;
+  let m: RegExpExecArray | null;
+  let tableIndex = 0;
+  while ((m = tblRegex.exec(xml)) !== null) {
+    tableIndex += 1;
+    const tblInner = m[1];
+    const rowMatches = tblInner.match(/<w:tr\b[^>]*>[\s\S]*?<\/w:tr>/gi) ?? [];
+    const lines: string[] = [];
+    for (const rowXml of rowMatches) {
+      const cellMatches = rowXml.match(/<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/gi) ?? [];
+      const cells = cellMatches.map((cellXml) => {
+        const inner = cellXml
+          .replace(/<w:tbl\b[^>]*>[\s\S]*?<\/w:tbl>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ');
+        let t = decodeBasicXmlEntities(inner);
+        t = t.replace(/\s+/g, ' ').trim();
+        return t;
+      });
+      if (cells.length) lines.push(cells.join('\t'));
+    }
+    if (lines.length) {
+      sections.push(`— Table ${tableIndex} —\n${lines.join('\n')}`);
+    }
+  }
+  return sections;
+}
+
+/** Build Word preview body in the same visual language as Excel (section headers + monospace-friendly text). */
+function buildWordPreviewBody(xml: string): string {
+  const tableSections = docxTablesToPlainSections(xml);
+  const withoutTables = stripDocxTables(xml);
+  let bodyText = docxXmlToPlainText(withoutTables);
+  if (!bodyText) bodyText = '';
+
+  const parts: string[] = [];
+  parts.push('— Document —');
+  parts.push(bodyText || '(No body text outside tables)');
+
+  for (const block of tableSections) {
+    parts.push('');
+    parts.push(block);
+  }
+
+  let out = parts.join('\n\n').trim();
+  if (!out) out = '(No readable text in this document)';
+  return out;
+}
+
 export type OfflinePreviewResult =
   | { ok: true; body: string; footer?: string }
   | { ok: false; message: string };
@@ -73,14 +132,15 @@ export async function loadOfflinePreview(uri: string, fileType: FileType): Promi
         };
       }
       const xml = await docXml.async('string');
-      let text = docxXmlToPlainText(xml);
-      if (!text) {
-        return { ok: true, body: '(No readable text in this document)', footer: 'Word preview · offline' };
-      }
+      let text = buildWordPreviewBody(xml);
       if (text.length > MAX_PREVIEW_CHARS) {
         text = `${text.slice(0, MAX_PREVIEW_CHARS)}\n\n… (preview truncated)`;
       }
-      return { ok: true, body: text, footer: 'Word preview · offline (layout simplified)' };
+      return {
+        ok: true,
+        body: text,
+        footer: 'Word preview · offline (like spreadsheet preview: sections + tables as tab-separated rows)',
+      };
     }
 
     if (fileType === 'excel') {
