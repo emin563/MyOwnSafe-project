@@ -1,6 +1,6 @@
 import type { MlKitScanOutcome } from './mlKitDocumentScan.types';
 
-export type { MlKitScanOutcome } from './mlKitDocumentScan.types';
+export type { MlKitErrorKind, MlKitScanOutcome } from './mlKitDocumentScan.types';
 
 /**
  * Non-Android: ML Kit scanner is not used.

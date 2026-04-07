@@ -11,3 +11,4 @@ export function normalizeMlKitScannerMode(value: string | null | undefined): MlK
   if (value === 'base_with_filter' || value === 'full') return value;
   return 'base';
 }
+

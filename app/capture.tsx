@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ScrollView,
   Modal,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -113,14 +114,19 @@ export default function CaptureScreen() {
   const [ocrOptionsVisible, setOcrOptionsVisible] = useState(false);
   const [proMultiPagePitchVisible, setProMultiPagePitchVisible] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
+  /** Keeps latest capturing without putting `capturing` in runAndroidMlKitDocumentScan deps (avoids useFocusEffect relaunch loop). */
+  const capturingRef = useRef(false);
   const finishingMultiPageRef = useRef(false);
   const captureStartedAtRef = useRef<number | null>(null);
   /** When set, handleFinishMultiPageUnsafe builds PDF from these URIs (Android ML Kit) instead of multiPageImages. */
   const mlKitPendingUrisRef = useRef<string[] | null>(null);
+  /** After repeated ML Kit failures, user can fall back to Expo Camera without leaving the screen. */
+  const [mlKitOverrideCamera, setMlKitOverrideCamera] = useState(false);
+  const mlKitConsecutiveFailsRef = useRef(0);
 
   /** Android dev builds with ML Kit: skip Expo Camera preview and open the document scanner directly. */
   const androidMlKitDirect =
-    Platform.OS === 'android' && isAndroidMlKitScannerPlatform();
+    Platform.OS === 'android' && isAndroidMlKitScannerPlatform() && !mlKitOverrideCamera;
 
   const isPro = useAppStore((s) => s.isPro);
   const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
@@ -140,6 +146,8 @@ export default function CaptureScreen() {
   const setOcrLanguage = useAppStore((s) => s.setOcrLanguage);
   const ocrExtractActive = ocrExtractOnCapture;
   const loadSettings = useAppStore((s) => s.loadSettings);
+
+  capturingRef.current = capturing;
 
   useFocusEffect(
     useCallback(() => {
@@ -514,7 +522,7 @@ export default function CaptureScreen() {
 
   const runAndroidMlKitDocumentScan = useCallback(
     async (options?: { skipMlKitMultiPageWarning?: boolean }) => {
-    if (capturing) return;
+    if (capturingRef.current) return;
     if (
       multiPageMode &&
       !mlKitMultiPageWarningDismissed &&
@@ -537,14 +545,50 @@ export default function CaptureScreen() {
       const scan = await launchVaultMlKitScan(multiPageMode);
       if (!scan.ok) {
         if (scan.canceled) {
+          mlKitConsecutiveFailsRef.current = 0;
           leaveCaptureScreen();
           return;
         }
-        if (scan.message) {
-          Alert.alert('Document scan', scan.message);
+        if (scan.errorKind === 'gps_unavailable') {
+          mlKitConsecutiveFailsRef.current = 0;
+          Alert.alert(
+            'Document scanner',
+            'Google Play services need to be up to date for the document scanner. Update Google Play services and try again.',
+            [
+              {
+                text: 'Update',
+                onPress: () => {
+                  void Linking.openURL('market://details?id=com.google.android.gms').catch(() => {
+                    void Linking.openURL('https://play.google.com/store/apps/details?id=com.google.android.gms');
+                  });
+                },
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          );
+          return;
+        }
+        mlKitConsecutiveFailsRef.current += 1;
+        const failCount = mlKitConsecutiveFailsRef.current;
+        const message = scan.message ?? 'Document scanner failed.';
+        if (failCount >= 2) {
+          Alert.alert('Document scan', message, [
+            {
+              text: 'Use camera instead',
+              onPress: () => {
+                setMlKitOverrideCamera(true);
+                mlKitConsecutiveFailsRef.current = 0;
+              },
+            },
+            { text: 'OK', style: 'cancel' },
+          ]);
+        } else {
+          Alert.alert('Document scan', message);
         }
         return;
       }
+
+      mlKitConsecutiveFailsRef.current = 0;
 
       const permanentUris: string[] = [];
       for (const uri of scan.pageUris) {
@@ -574,7 +618,7 @@ export default function CaptureScreen() {
       setCapturing(false);
     }
   },
-  [capturing, leaveCaptureScreen, mlKitMultiPageWarningDismissed, multiPageMode]
+  [leaveCaptureScreen, mlKitMultiPageWarningDismissed, multiPageMode]
 );
 
   const handleCapture = async () => {
