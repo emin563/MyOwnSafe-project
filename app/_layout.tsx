@@ -1,15 +1,24 @@
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { initDb } from '@/db/schema';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { Toast } from '@/components/ui';
 import { InputModal } from '@/components/ui/InputModal';
-import {
-  configureNotifications,
-  requestNotificationPermissions,
-} from '@/services/NotificationService';
+import { configureNotifications } from '@/services/NotificationService';
+import { PrivacyWelcomeModal } from '@/components/onboarding/PrivacyWelcomeModal';
 import { configureRevenueCat } from '@/services/PurchaseService';
+
+const FAST_STACK_MS = 280;
+const horizontalStackOptions =
+  Platform.OS === 'ios'
+    ? { animation: 'simple_push' as const, animationDuration: FAST_STACK_MS }
+    : { animation: 'default' as const };
+const iosTransitionOnly =
+  Platform.OS === 'ios' ? { animationDuration: FAST_STACK_MS } : {};
+
 export default function RootLayout() {
   const {
     setDbReady,
@@ -22,7 +31,26 @@ export default function RootLayout() {
     dismissVaultNamePrompt,
     toast,
     clearToast,
-  } = useAppStore();
+    settingsHydrated,
+    privacyOnboardingCompleted,
+    completePrivacyOnboarding,
+  } = useAppStore(
+    useShallow((s) => ({
+      setDbReady: s.setDbReady,
+      loadCategories: s.loadCategories,
+      loadDocuments: s.loadDocuments,
+      loadTags: s.loadTags,
+      loadSettings: s.loadSettings,
+      vaultNamePromptVisible: s.vaultNamePromptVisible,
+      setVaultName: s.setVaultName,
+      dismissVaultNamePrompt: s.dismissVaultNamePrompt,
+      toast: s.toast,
+      clearToast: s.clearToast,
+      settingsHydrated: s.settingsHydrated,
+      privacyOnboardingCompleted: s.privacyOnboardingCompleted,
+      completePrivacyOnboarding: s.completePrivacyOnboarding,
+    }))
+  );
 
   useEffect(() => {
     async function bootstrap() {
@@ -31,13 +59,10 @@ export default function RootLayout() {
       configureRevenueCat();
       await configureNotifications();
       await loadSettings();
-      await loadCategories();
-      await loadDocuments(null);
-      await loadTags();
-      await requestNotificationPermissions();
+      await Promise.all([loadCategories(), loadDocuments(null), loadTags()]);
     }
     bootstrap();
-  }, []);
+  }, [loadCategories, loadDocuments, loadSettings, loadTags, setDbReady]);
 
   return (
     <>
@@ -46,92 +71,57 @@ export default function RootLayout() {
         screenOptions={{
           headerShown: false,
           contentStyle: { backgroundColor: '#000000' },
-          animation: 'slide_from_right',
+          ...horizontalStackOptions,
         }}
       >
-        <Stack.Screen name="(drawer)" options={{ headerShown: false }} />
+        <Stack.Screen name="(drawer)" />
         <Stack.Screen
           name="document/[id]"
           options={{
-            headerShown: false,
             animation: 'slide_from_bottom',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
           name="document/import-review"
           options={{
-            headerShown: false,
             animation: 'slide_from_bottom',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
           name="capture"
           options={{
-            headerShown: false,
             animation: 'slide_from_bottom',
-          }}
-        />
-        <Stack.Screen
-          name="settings"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        />
-        <Stack.Screen
-          name="oauth2redirect"
-          options={{
-            headerShown: false,
-            animation: 'fade',
-          }}
-        />
-        <Stack.Screen
-          name="oauthredirect"
-          options={{
-            headerShown: false,
-            animation: 'fade',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
           name="pdf-viewer"
           options={{
-            headerShown: false,
             animation: 'slide_from_bottom',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
           name="file-preview"
           options={{
-            headerShown: false,
             animation: 'slide_from_bottom',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
-          name="privacy-offline"
+          name="oauth2redirect"
           options={{
-            headerShown: false,
-            animation: 'slide_from_right',
+            animation: 'fade',
+            ...iosTransitionOnly,
           }}
         />
         <Stack.Screen
-          name="ocr-extraction-info"
+          name="oauthredirect"
           options={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        />
-        <Stack.Screen
-          name="multi-page-info"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        />
-        <Stack.Screen
-          name="app-locking-info"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_right',
+            animation: 'fade',
+            ...iosTransitionOnly,
           }}
         />
       </Stack>
@@ -155,6 +145,11 @@ export default function RootLayout() {
         onCancel={() => {
           void dismissVaultNamePrompt();
         }}
+      />
+
+      <PrivacyWelcomeModal
+        visible={settingsHydrated && !privacyOnboardingCompleted}
+        onGetStarted={() => completePrivacyOnboarding()}
       />
     </>
   );

@@ -14,15 +14,17 @@ import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import { router } from 'expo-router';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { withExternalActivityGuard } from '@/store/auth-flags';
+import { isAllowedShareSourceUri } from '@/services/archiveUri';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { ConfirmModal, UseAiWorkflowSheet } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Document } from '@/db/types';
-import type { Tag } from '@/db/types';
+import type { Category, Document, Tag } from '@/db/types';
 
 type Props = {
   document: Document;
+  category?: Category | null;
   tags?: Tag[];
   selectionMode?: boolean;
   isSelected?: boolean;
@@ -34,25 +36,38 @@ const MAX_VISIBLE_TAGS = 3;
 
 export function DocumentCard({
   document,
+  category,
   tags = [],
   selectionMode = false,
   isSelected = false,
   onLongPress,
   onPressInSelectionMode,
 }: Props) {
-  const { categories, removeDocument, editDocument, duplicateDocument, showToast } = useAppStore();
+  const { categories, removeDocument, editDocument, duplicateDocument, showToast } = useAppStore(
+    useShallow((s) => ({
+      categories: s.categories,
+      removeDocument: s.removeDocument,
+      editDocument: s.editDocument,
+      duplicateDocument: s.duplicateDocument,
+      showToast: s.showToast,
+    }))
+  );
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
 
-  const category = categories.find((c) => c.id === document.category_id);
+  const displayCategory = category ?? categories.find((c) => c.id === document.category_id) ?? null;
   const isExpiringSoon = checkExpiringSoon(document.expiry_date);
   const isExpired = checkExpired(document.expiry_date);
 
   const handleShare = async () => {
     try {
+      if (!isAllowedShareSourceUri(document.file_uri)) {
+        showToast('Cannot share this file.', 'info');
+        return;
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -217,11 +232,11 @@ export function DocumentCard({
               )}
             </View>
 
-            {category && (
+            {displayCategory && (
               <View style={styles.categoryRow}>
-                <Ionicons name={category.icon_name as any} size={12} color={Colors.primary} />
+                <Ionicons name={displayCategory.icon_name as any} size={12} color={Colors.primary} />
                 <Text style={styles.categoryText} numberOfLines={1}>
-                  {category.name}
+                  {displayCategory.name}
                 </Text>
               </View>
             )}
@@ -326,7 +341,7 @@ export function DocumentCard({
           id: document.id,
           title: document.title,
           fileType: document.file_type,
-          categoryName: category?.name ?? null,
+          categoryName: displayCategory?.name ?? null,
         }}
         fileUri={document.file_uri}
       />

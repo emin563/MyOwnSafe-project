@@ -22,6 +22,7 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
   const isIntroEligible = useAppStore((s) => s.isIntroEligible);
+  const isPro = useAppStore((s) => s.isPro);
 
   const copy = getLimitReachedCopy(kind);
 
@@ -78,20 +79,22 @@ export function LimitReachedDialog({ visible, kind, onClose, onUpgrade, onManage
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.limitTertiaryBtn}
-                onPress={() => setShowWhyPro(true)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.limitTertiaryText}>Why Pro? (Quick quiz)</Text>
-              </TouchableOpacity>
+              {!isPro ? (
+                <TouchableOpacity
+                  style={styles.limitTertiaryBtn}
+                  onPress={() => setShowWhyPro(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.limitTertiaryText}>Is Pro right for you? (Quick check)</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           </View>
         </View>
       </Modal>
 
       <Modal
-        visible={showWhyPro}
+        visible={showWhyPro && !isPro}
         transparent
         animationType="slide"
         onRequestClose={() => setShowWhyPro(false)}

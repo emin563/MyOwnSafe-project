@@ -27,6 +27,7 @@ export function ProIncludedFeatureDialog({
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
   const isIntroEligible = useAppStore((s) => s.isIntroEligible);
+  const isPro = useAppStore((s) => s.isPro);
 
   return (
     <>
@@ -65,13 +66,15 @@ export function ProIncludedFeatureDialog({
                   : 'One-time purchase. No subscription. No recurring fees.'}
               </Text>
 
-              <TouchableOpacity
-                style={styles.limitTertiaryBtn}
-                onPress={() => setShowWhyPro(true)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.limitTertiaryText}>Why should I buy Pro?</Text>
-              </TouchableOpacity>
+              {!isPro ? (
+                <TouchableOpacity
+                  style={styles.limitTertiaryBtn}
+                  onPress={() => setShowWhyPro(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.limitTertiaryText}>Is Pro right for you?</Text>
+                </TouchableOpacity>
+              ) : null}
 
               <TouchableOpacity
                 style={styles.limitSecondaryBtn}
@@ -89,7 +92,7 @@ export function ProIncludedFeatureDialog({
       </Modal>
 
       <Modal
-        visible={showWhyPro}
+        visible={showWhyPro && !isPro}
         transparent
         animationType="slide"
         onRequestClose={() => setShowWhyPro(false)}

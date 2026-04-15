@@ -31,6 +31,27 @@ export async function configureNotifications(): Promise<void> {
   });
 }
 
+export type NotificationPermissionStatus =
+  | 'granted'
+  | 'denied'
+  | 'undetermined'
+  | 'unsupported';
+
+/**
+ * Current notification permission without prompting (for Settings / status UI).
+ */
+export async function getNotificationPermissionStatus(): Promise<NotificationPermissionStatus> {
+  const Notifications = await getNotificationsModule();
+  if (!Notifications) {
+    return 'unsupported';
+  }
+
+  const { status } = await Notifications.getPermissionsAsync();
+  if (status === 'granted') return 'granted';
+  if (status === 'denied') return 'denied';
+  return 'undetermined';
+}
+
 /**
  * Requests local notification permissions from the OS.
  * Returns true if granted, false otherwise.
@@ -57,6 +78,14 @@ export async function scheduleExpiryNotification(
   if (!Notifications) return null;
 
   if (!doc.expiry_date) return null;
+
+  const existing = await Notifications.getPermissionsAsync();
+  if (existing.status !== 'granted') {
+    const req = await Notifications.requestPermissionsAsync();
+    if (req.status !== 'granted') {
+      return null;
+    }
+  }
 
   const expiryDate = new Date(doc.expiry_date);
   const now = new Date();

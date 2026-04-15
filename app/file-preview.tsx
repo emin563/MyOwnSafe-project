@@ -16,6 +16,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { loadOfflinePreview } from '@/services/offlinePreview';
 import { openFileWithOtherApps } from '@/services/openWithExternal';
+import { isAllowedArchiveFileUri } from '@/services/archiveUri';
 import { PreviewScreenHeader } from '@/components/preview/PreviewScreenHeader';
 import { ZoomableImage } from '@/components/preview/ZoomableImage';
 import { SimpleMarkdownPreview } from '@/components/preview/SimpleMarkdownPreview';
@@ -61,6 +62,7 @@ export default function FilePreviewScreen() {
 
   const uri = uriParam ? decodeURIComponent(uriParam) : '';
   const fileType = parseFileType(ftParam);
+  const isAllowedUri = isAllowedArchiveFileUri(uri);
 
   const [loading, setLoading] = useState(true);
   const [body, setBody] = useState<string | null>(null);
@@ -76,6 +78,11 @@ export default function FilePreviewScreen() {
     if (!uri || !fileType) {
       setLoading(false);
       setError('Missing file or type.');
+      return;
+    }
+    if (!isAllowedUri) {
+      setLoading(false);
+      setError('This file path is not allowed for in-app preview.');
       return;
     }
     if (fileType === 'image') {
@@ -96,10 +103,10 @@ export default function FilePreviewScreen() {
     return () => {
       cancelled = true;
     };
-  }, [uri, fileType]);
+  }, [uri, fileType, isAllowedUri]);
 
   const handleOpenExternal = useCallback(async () => {
-    if (!uri || !fileType) return;
+    if (!uri || !fileType || !isAllowedUri) return;
     try {
       setOpening(true);
       await openFileWithOtherApps(uri, fileType);
@@ -108,7 +115,7 @@ export default function FilePreviewScreen() {
     } finally {
       setOpening(false);
     }
-  }, [uri, fileType]);
+  }, [uri, fileType, isAllowedUri]);
 
   const handleCopy = useCallback(async () => {
     if (!body) return;
@@ -141,7 +148,7 @@ export default function FilePreviewScreen() {
       <PreviewScreenHeader
         title={headerTitle}
         onBack={() => router.back()}
-        onOpenInApp={fileType ? handleOpenExternal : undefined}
+        onOpenInApp={fileType && isAllowedUri ? handleOpenExternal : undefined}
         openLoading={opening}
         subtitle={subtitle}
       />
@@ -162,7 +169,7 @@ export default function FilePreviewScreen() {
           <Ionicons name="document-outline" size={48} color={Colors.textMuted} />
           <Text style={styles.errorTitle}>{PREVIEW_COPY.unavailableTitle}</Text>
           <Text style={styles.errorBody}>{error}</Text>
-          {fileType ? (
+          {fileType && isAllowedUri ? (
             <TouchableOpacity style={styles.openBtn} onPress={handleOpenExternal} activeOpacity={0.8}>
               <Text style={styles.openBtnText}>{PREVIEW_COPY.openInAppShort}</Text>
             </TouchableOpacity>

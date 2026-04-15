@@ -45,8 +45,7 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
         "com.android.vending.BILLING"
       ],
       "package": "com.gundogdu.myownsafe"
@@ -75,13 +74,15 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Vault uses the camera to scan and capture documents."
+          "cameraPermission": "Vault uses the camera to scan and capture documents.",
+          "recordAudioAndroid": false
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Vault accesses your photo library to import documents."
+          "photosPermission": "Vault accesses your photos and files so you can import documents and save exports.",
+          "microphonePermission": false
         }
       ],
       [

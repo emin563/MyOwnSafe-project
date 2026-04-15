@@ -1,3 +1,4 @@
+export { BackupProgressModal } from './BackupProgressModal';
 export { PillButton } from './PillButton';
 export { SearchInput } from './SearchInput';
 export { IconButton } from './IconButton';

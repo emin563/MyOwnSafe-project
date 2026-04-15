@@ -12,6 +12,7 @@ import {
   FlatList,
   Modal,
   ActivityIndicator,
+  Share,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,10 +23,12 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { withExternalActivityGuard } from '@/store/auth-flags';
 import { getDocumentById } from '@/db/documents';
 import { getTagsForDocument } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
+import { isAllowedShareSourceUri } from '@/services/archiveUri';
 import { exportDocumentAsPdf } from '@/services/PdfService';
 import { UseAiWorkflowSheet } from '@/components/ui';
 import { LimitReachedDialog, PaywallModal } from '@/components/ui';
@@ -33,7 +36,42 @@ import { isLimitError } from '@/services/LimitError';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
 import { PREVIEW_COPY } from '@/constants/previewCopy';
 import { getOcrReadTrialsRemaining } from '@/services/limits';
+import {
+  isoToLocalDate,
+  localDateToIso,
+  parseExpiryDateInput,
+} from '@/services/parseExpiryDate';
 import type { Category, FileType, Tag } from '@/db/types';
+import DateTimePicker from '@react-native-community/datetimepicker';
+
+/** Prepended when copying or sharing a page range for AI cleanup. */
+const OCR_REVIEW_PROMPT = 'Correct spelling errors and make it more organized.';
+
+/** Split OCR page text into plain vs search-hit spans (case-insensitive substring, all occurrences). */
+function splitOcrTextForHighlight(content: string, query: string): Array<{ text: string; highlight: boolean }> {
+  const q = query.trim();
+  if (!q || !content) {
+    return [{ text: content, highlight: false }];
+  }
+  const lowerContent = content.toLocaleLowerCase();
+  const lowerQ = q.toLocaleLowerCase();
+  const segments: Array<{ text: string; highlight: boolean }> = [];
+  let start = 0;
+  let idx = lowerContent.indexOf(lowerQ, start);
+  while (idx !== -1) {
+    if (idx > start) {
+      segments.push({ text: content.slice(start, idx), highlight: false });
+    }
+    const matchLen = q.length;
+    segments.push({ text: content.slice(idx, idx + matchLen), highlight: true });
+    start = idx + matchLen;
+    idx = lowerContent.indexOf(lowerQ, start);
+  }
+  if (start < content.length) {
+    segments.push({ text: content.slice(start), highlight: false });
+  }
+  return segments.length > 0 ? segments : [{ text: content, highlight: false }];
+}
 
 export default function DocumentEditorScreen() {
   const { id, fileUri: paramFileUri, fileType: paramFileType } = useLocalSearchParams<{
@@ -62,7 +100,28 @@ export default function DocumentEditorScreen() {
     firstLaunchAt,
     pendingOcrText,
     clearPendingOcrText,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      categories: s.categories,
+      tags: s.tags,
+      loadTags: s.loadTags,
+      selectedCategoryId: s.selectedCategoryId,
+      addDocument: s.addDocument,
+      editDocument: s.editDocument,
+      removeDocument: s.removeDocument,
+      duplicateDocument: s.duplicateDocument,
+      showToast: s.showToast,
+      tagDocument: s.tagDocument,
+      untagDocument: s.untagDocument,
+      getOrCreateTag: s.getOrCreateTag,
+      ocrExtractOnCapture: s.ocrExtractOnCapture,
+      isPro: s.isPro,
+      ocrReadTrialsUsed: s.ocrReadTrialsUsed,
+      firstLaunchAt: s.firstLaunchAt,
+      pendingOcrText: s.pendingOcrText,
+      clearPendingOcrText: s.clearPendingOcrText,
+    }))
+  );
 
   const [title, setTitle] = useState('');
   const [fileUri, setFileUri] = useState(paramFileUri ?? '');
@@ -91,9 +150,13 @@ export default function DocumentEditorScreen() {
   const [ocrPaywallVisible, setOcrPaywallVisible] = useState(false);
   const [busyText, setBusyText] = useState<string | null>(null);
   const [showBusyOverlay, setShowBusyOverlay] = useState(false);
+  const [expiryPickerVisible, setExpiryPickerVisible] = useState(false);
   const [ocrCurrentPageIdx, setOcrCurrentPageIdx] = useState(0);
   const [ocrZoom, setOcrZoom] = useState(1);
   const [ocrSearchQuery, setOcrSearchQuery] = useState('');
+  /** Inclusive page range (OCR page numbers) for copy/share with review prompt. */
+  const [ocrSelFrom, setOcrSelFrom] = useState('1');
+  const [ocrSelTo, setOcrSelTo] = useState('1');
 
   const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed, firstLaunchAt);
   const ocrQuotaBlocked = !isPro && ocrReadsRemaining <= 0;
@@ -154,6 +217,18 @@ export default function DocumentEditorScreen() {
     setOcrZoom(1);
     setOcrSearchQuery('');
   }, [ocrText]);
+
+  const ocrPageNumBounds = useMemo(() => {
+    if (ocrPages.length === 0) return { min: 1, max: 1 };
+    const nums = ocrPages.map((p) => p.pageNumber);
+    return { min: Math.min(...nums), max: Math.max(...nums) };
+  }, [ocrPages]);
+
+  useEffect(() => {
+    if (ocrPages.length === 0) return;
+    setOcrSelFrom(String(ocrPageNumBounds.min));
+    setOcrSelTo(String(ocrPageNumBounds.max));
+  }, [ocrText, ocrPages.length, ocrPageNumBounds.min, ocrPageNumBounds.max]);
 
   const loadDocument = useCallback(async () => {
     const doc = await getDocumentById(Number(id));
@@ -287,6 +362,78 @@ export default function DocumentEditorScreen() {
     }
   };
 
+  const buildOcrRangeBody = useCallback(
+    (fromPage: number, toPage: number) => {
+      const lo = Math.min(fromPage, toPage);
+      const hi = Math.max(fromPage, toPage);
+      const parts: string[] = [];
+      for (const p of ocrPages) {
+        if (p.pageNumber >= lo && p.pageNumber <= hi) {
+          parts.push(`=== Page ${p.pageNumber} ===\n${p.content.trim()}`);
+        }
+      }
+      return parts.join('\n\n');
+    },
+    [ocrPages]
+  );
+
+  const parseOcrRange = useCallback((): { ok: true; from: number; to: number } | { ok: false; message: string } => {
+    const from = Number.parseInt(ocrSelFrom.trim(), 10);
+    const to = Number.parseInt(ocrSelTo.trim(), 10);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      return { ok: false, message: 'Enter valid page numbers.' };
+    }
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    if (lo < ocrPageNumBounds.min || hi > ocrPageNumBounds.max) {
+      return {
+        ok: false,
+        message: `Pages must be between ${ocrPageNumBounds.min} and ${ocrPageNumBounds.max}.`,
+      };
+    }
+    return { ok: true, from: lo, to: hi };
+  }, [ocrSelFrom, ocrSelTo, ocrPageNumBounds.min, ocrPageNumBounds.max]);
+
+  const handleCopyOcrRangeWithPrompt = async () => {
+    const parsed = parseOcrRange();
+    if (!parsed.ok) {
+      showToast(parsed.message, 'danger');
+      return;
+    }
+    const body = buildOcrRangeBody(parsed.from, parsed.to);
+    if (!body.trim()) {
+      showToast('No text in selected range.', 'danger');
+      return;
+    }
+    const full = `${OCR_REVIEW_PROMPT}\n\n${body}`;
+    try {
+      await Clipboard.setStringAsync(full);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      showToast('Copied prompt and selected pages', 'success');
+    } catch {
+      showToast('Could not copy', 'danger');
+    }
+  };
+
+  const handleShareOcrRangeWithPrompt = async () => {
+    const parsed = parseOcrRange();
+    if (!parsed.ok) {
+      showToast(parsed.message, 'danger');
+      return;
+    }
+    const body = buildOcrRangeBody(parsed.from, parsed.to);
+    if (!body.trim()) {
+      showToast('No text in selected range.', 'danger');
+      return;
+    }
+    const full = `${OCR_REVIEW_PROMPT}\n\n${body}`;
+    try {
+      await withExternalActivityGuard(() => Share.share({ message: full }));
+    } catch {
+      showToast('Could not share', 'danger');
+    }
+  };
+
   const ocrMatchPageIndexes = useMemo(() => {
     const q = ocrSearchQuery.trim().toLocaleLowerCase();
     if (!q) return [];
@@ -318,6 +465,26 @@ export default function DocumentEditorScreen() {
     [ocrCurrentPageIdx, ocrMatchPageIndexes]
   );
 
+  const renderOcrHighlightedBody = (content: string) => {
+    const baseStyle = [
+      styles.ocrPageBody,
+      {
+        fontSize: Math.round(Typography.fontSizeBase * ocrZoom),
+        lineHeight: Math.round((Typography.lineHeightBase + 2) * ocrZoom),
+      },
+    ];
+    const segments = splitOcrTextForHighlight(content, ocrSearchQuery);
+    return (
+      <Text style={baseStyle} selectable>
+        {segments.map((seg, i) => (
+          <Text key={i} style={seg.highlight ? styles.ocrSearchHitText : undefined}>
+            {seg.text}
+          </Text>
+        ))}
+      </Text>
+    );
+  };
+
   /** New docs often open via router.replace (e.g. from capture); GO_BACK then has no handler. */
   const leaveDocumentEditor = useCallback(() => {
     if (isNew) {
@@ -348,11 +515,12 @@ export default function DocumentEditorScreen() {
       return;
     }
 
-    const expiry = expiryDate.trim() || null;
-    if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-      Alert.alert('Invalid Date', 'Please enter the expiry date in YYYY-MM-DD format.');
+    const parsedExpiry = parseExpiryDateInput(expiryDate);
+    if (!parsedExpiry.ok) {
+      Alert.alert('Invalid Date', parsedExpiry.message);
       return;
     }
+    const expiry = parsedExpiry.iso;
 
     setSaving(true);
     setBusyText('Saving document...');
@@ -395,6 +563,10 @@ export default function DocumentEditorScreen() {
   const handleShare = async () => {
     if (!fileUri) return;
     try {
+      if (!isAllowedShareSourceUri(fileUri)) {
+        showToast('Cannot share this file.', 'info');
+        return;
+      }
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -471,6 +643,12 @@ export default function DocumentEditorScreen() {
 
   const selectedCategory = categories.find((c) => c.id === categoryId);
 
+  const openTagPicker = useCallback(() => {
+    setTagPickerVisible(true);
+    setNewTagName('');
+    void loadTags();
+  }, [loadTags]);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -496,14 +674,24 @@ export default function DocumentEditorScreen() {
           </Text>
           <View style={styles.headerRight}>
             {!isNew && (
-              <TouchableOpacity
-                onPress={() => setCategoryPickerVisible(true)}
-                style={styles.headerBtn}
-                activeOpacity={0.7}
-                accessibilityLabel="Move to category"
-              >
-                <Ionicons name="folder-open-outline" size={20} color={Colors.text} />
-              </TouchableOpacity>
+              <>
+                <TouchableOpacity
+                  onPress={() => setCategoryPickerVisible(true)}
+                  style={styles.headerBtn}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Move to category"
+                >
+                  <Ionicons name="folder-open-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={openTagPicker}
+                  style={styles.headerBtn}
+                  activeOpacity={0.7}
+                  accessibilityLabel="Edit tags"
+                >
+                  <Ionicons name="pricetag-outline" size={20} color={Colors.text} />
+                </TouchableOpacity>
+              </>
             )}
             {fileUri && !isNew ? (
               <TouchableOpacity onPress={handleExportPdf} style={styles.headerBtn} activeOpacity={0.7}>
@@ -657,29 +845,35 @@ export default function DocumentEditorScreen() {
 
           <View style={styles.divider} />
 
-          {/* Tags */}
-          <View style={styles.tagsSection}>
-            <View style={styles.fieldRow}>
-              <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
-              <Text style={styles.fieldText}>Tags</Text>
-              <TouchableOpacity
-                style={styles.addTagBtn}
-                onPress={() => {
-                  setTagPickerVisible(true);
-                  setNewTagName('');
-                  loadTags();
-                }}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="add" size={16} color={Colors.primary} />
-                <Text style={styles.addTagBtnText}>Add tag</Text>
-              </TouchableOpacity>
-            </View>
-            {documentTags.length > 0 && (
+          {/* Tags — same interaction model as category: tap the row to choose / manage */}
+          <TouchableOpacity
+            style={styles.fieldRow}
+            onPress={openTagPicker}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Tags"
+            accessibilityHint="Opens tag picker to add or remove tags"
+          >
+            <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
+            <Text
+              style={[styles.fieldText, documentTags.length > 0 && styles.fieldTextActive]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              {documentTags.length === 0
+                ? 'Add tags (optional)'
+                : documentTags.map((t) => t.name).join(', ')}
+            </Text>
+            <Ionicons name="chevron-forward" size={14} color={Colors.textMuted} />
+          </TouchableOpacity>
+          {documentTags.length > 0 ? (
+            <View style={styles.tagChipsWrap}>
               <View style={styles.tagChipsRow}>
                 {documentTags.map((tag) => (
                   <View key={tag.id} style={styles.tagChip}>
-                    <Text style={styles.tagChipText} numberOfLines={1}>{tag.name}</Text>
+                    <Text style={styles.tagChipText} numberOfLines={2}>
+                      {tag.name}
+                    </Text>
                     <TouchableOpacity
                       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                       onPress={async () => {
@@ -697,8 +891,8 @@ export default function DocumentEditorScreen() {
                   </View>
                 ))}
               </View>
-            )}
-          </View>
+            </View>
+          ) : null}
 
           <View style={styles.divider} />
 
@@ -725,18 +919,53 @@ export default function DocumentEditorScreen() {
               style={styles.inlineInput}
               value={expiryDate}
               onChangeText={setExpiryDate}
-              placeholder="Expiry date YYYY-MM-DD (optional)"
+              placeholder="Expiry (optional) — type or tap calendar"
               placeholderTextColor={Colors.textMuted}
               selectionColor={Colors.primary}
               keyboardType="numbers-and-punctuation"
-              maxLength={10}
+              autoCorrect={false}
+              autoCapitalize="none"
+              onBlur={() => {
+                const t = expiryDate.trim();
+                if (!t) return;
+                const p = parseExpiryDateInput(t);
+                if (p.ok && p.iso) {
+                  setExpiryDate(p.iso);
+                }
+              }}
             />
+            {Platform.OS === 'android' ? (
+              <TouchableOpacity
+                onPress={() => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setExpiryPickerVisible(true);
+                }}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Pick expiry date"
+              >
+                <Ionicons name="calendar" size={22} color={Colors.primary} />
+              </TouchableOpacity>
+            ) : null}
             {expiryDate.length > 0 && (
               <TouchableOpacity onPress={() => setExpiryDate('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
               </TouchableOpacity>
             )}
           </View>
+          {Platform.OS === 'android' && expiryPickerVisible ? (
+            <DateTimePicker
+              value={isoToLocalDate(expiryDate.trim()) ?? new Date()}
+              mode="date"
+              display="default"
+              onChange={(event, date) => {
+                setExpiryPickerVisible(false);
+                if (event.type === 'set' && date) {
+                  setExpiryDate(localDateToIso(date));
+                }
+              }}
+            />
+          ) : null}
 
           <View style={styles.divider} />
 
@@ -840,6 +1069,57 @@ export default function DocumentEditorScreen() {
                           <Ionicons name="add-outline" size={14} color={Colors.text} />
                           <Text style={styles.ocrToolBtnText}>A+</Text>
                         </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {ocrPages.length > 0 && (
+                      <View style={styles.ocrSelectionCard}>
+                        <Text style={styles.ocrSelectionTitle}>Review spelling & layout</Text>
+                        <Text style={styles.ocrSelectionHint}>
+                          Select from … to … (page numbers), then copy or share. The prompt below is placed first, then
+                          your selected pages.
+                        </Text>
+                        <Text style={styles.ocrSelectionPrompt}>{OCR_REVIEW_PROMPT}</Text>
+                        <View style={styles.ocrRangeRow}>
+                          <Text style={styles.ocrRangeLabel}>From</Text>
+                          <TextInput
+                            value={ocrSelFrom}
+                            onChangeText={setOcrSelFrom}
+                            keyboardType="number-pad"
+                            placeholder={`${ocrPageNumBounds.min}`}
+                            placeholderTextColor={Colors.textMuted}
+                            selectionColor={Colors.primary}
+                            style={styles.ocrRangeInput}
+                          />
+                          <Text style={styles.ocrRangeLabel}>to</Text>
+                          <TextInput
+                            value={ocrSelTo}
+                            onChangeText={setOcrSelTo}
+                            keyboardType="number-pad"
+                            placeholder={`${ocrPageNumBounds.max}`}
+                            placeholderTextColor={Colors.textMuted}
+                            selectionColor={Colors.primary}
+                            style={styles.ocrRangeInput}
+                          />
+                        </View>
+                        <View style={styles.ocrSelectionActions}>
+                          <TouchableOpacity
+                            style={styles.ocrSelectionBtn}
+                            onPress={handleCopyOcrRangeWithPrompt}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="copy-outline" size={18} color={Colors.primary} />
+                            <Text style={styles.ocrSelectionBtnText}>Copy</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.ocrSelectionBtn}
+                            onPress={handleShareOcrRangeWithPrompt}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="share-outline" size={18} color={Colors.primary} />
+                            <Text style={styles.ocrSelectionBtnText}>Share</Text>
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     )}
 
@@ -954,18 +1234,7 @@ export default function DocumentEditorScreen() {
                             </View>
                           </View>
                           <ScrollView style={styles.ocrPageScroll} contentContainerStyle={styles.ocrPageScrollContent}>
-                            <Text
-                              style={[
-                                styles.ocrPageBody,
-                                {
-                                  fontSize: Math.round(Typography.fontSizeBase * ocrZoom),
-                                  lineHeight: Math.round((Typography.lineHeightBase + 2) * ocrZoom),
-                                },
-                              ]}
-                              selectable
-                            >
-                              {ocrPages[ocrCurrentPageIdx]?.content ?? ''}
-                            </Text>
+                            {renderOcrHighlightedBody(ocrPages[ocrCurrentPageIdx]?.content ?? '')}
                           </ScrollView>
                         </View>
                       </View>
@@ -1006,18 +1275,7 @@ export default function DocumentEditorScreen() {
                           </View>
                         </View>
                         <ScrollView style={styles.ocrPageScroll} contentContainerStyle={styles.ocrPageScrollContent}>
-                          <Text
-                            style={[
-                              styles.ocrPageBody,
-                              {
-                                fontSize: Math.round(Typography.fontSizeBase * ocrZoom),
-                                lineHeight: Math.round((Typography.lineHeightBase + 2) * ocrZoom),
-                              },
-                            ]}
-                            selectable
-                          >
-                            {ocrPages[0]?.content ?? ''}
-                          </Text>
+                          {renderOcrHighlightedBody(ocrPages[0]?.content ?? '')}
                         </ScrollView>
                       </View>
                     )}
@@ -1071,7 +1329,7 @@ export default function DocumentEditorScreen() {
         >
           <View style={pickerStyles.sheet}>
             <View style={pickerStyles.handle} />
-            <Text style={pickerStyles.title}>Add tag</Text>
+            <Text style={pickerStyles.title}>Tags</Text>
             <TextInput
               style={pickerStyles.input}
               value={newTagName}
@@ -1461,6 +1719,75 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: Spacing.xs,
   },
+  ocrSelectionCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  ocrSelectionTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  ocrSelectionHint: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 18,
+  },
+  ocrSelectionPrompt: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  ocrRangeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  ocrRangeLabel: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  ocrRangeInput: {
+    minWidth: 56,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 8,
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  ocrSelectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginTop: Spacing.xs,
+  },
+  ocrSelectionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    backgroundColor: 'rgba(16, 163, 127, 0.1)',
+  },
+  ocrSelectionBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
   ocrPageCard: {
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1500,6 +1827,10 @@ const styles = StyleSheet.create({
     color: Colors.text,
     fontSize: Typography.fontSizeBase,
     lineHeight: Typography.lineHeightBase + 2,
+  },
+  ocrSearchHitText: {
+    color: Colors.danger,
+    fontWeight: Typography.fontWeightSemibold,
   },
   ocrPageScroll: {
     flex: 1,
@@ -1669,34 +2000,20 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightSemibold,
   },
-  tagsSection: {
+  tagChipsWrap: {
     paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.sm,
-  },
-  addTagBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: Radius.pill,
-    backgroundColor: 'rgba(16, 163, 127, 0.12)',
-  },
-  addTagBtnText: {
-    color: Colors.primary,
-    fontSize: Typography.fontSizeSm,
-    fontWeight: Typography.fontWeightMedium,
+    paddingBottom: Spacing.sm,
   },
   tagChipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: Spacing.xs,
-    marginTop: Spacing.sm,
   },
   tagChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    maxWidth: '100%',
     backgroundColor: Colors.surfaceHighlight,
     borderRadius: Radius.pill,
     paddingLeft: Spacing.sm,
@@ -1704,9 +2021,9 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   tagChipText: {
+    flexShrink: 1,
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
-    maxWidth: 120,
   },
   duplicateBtn: {
     flexDirection: 'row',

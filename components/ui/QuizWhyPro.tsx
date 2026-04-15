@@ -1,7 +1,15 @@
+import {
+  loadQuizWhyProState,
+  persistQuizAiFreedom,
+  persistQuizPrivacy,
+  persistQuizStepIndex,
+  persistQuizSubscription,
+} from '@/services/quizWhyProStorage';
+import { useAppStore } from '@/store/app-store';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
-import React, { useMemo, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { PillButton } from './PillButton';
 
 type Props = {
@@ -9,112 +17,170 @@ type Props = {
   onClose?: () => void;
 };
 
-type StorageAnswer = 'cloud' | 'device' | 'mixed' | null;
-type CloudTrustAnswer = 'trust' | 'unsure' | 'dont_trust' | null;
-type ControlAnswer = 'low' | 'medium' | 'high' | null;
-type PaymentsAnswer = 'yes' | 'no' | 'unknown' | null;
-type ValueAnswer = 'worth_it' | 'unsure' | 'expensive' | null;
-type AiScannerUsedAnswer = 'yes' | 'no' | 'not_sure' | null;
-type AiScannerDislikeAnswer = 'sub_cost' | 'sensitive_uploads' | 'ads_tracking' | 'complexity' | null;
+type TiredOfSubs = 'frustrated' | 'dont_mind' | null;
+type PrivacyWorry = 'prefer_local' | 'trust' | null;
+type AiFreedom = 'want_choice' | 'fine' | null;
 
-type StepId =
-  | 'storage'
-  | 'cloudTrust'
-  | 'control'
-  | 'payments'
-  | 'value'
-  | 'aiScannerUsed'
-  | 'aiScannerDislike'
-  | 'model'
-  | 'cta';
+type StepId = 'subscriptions' | 'privacy' | 'aiFreedom' | 'model' | 'cta';
 
-const STEP_ORDER: StepId[] = [
-  'storage',
-  'cloudTrust',
-  'control',
-  'payments',
-  'value',
-  'aiScannerUsed',
-  'aiScannerDislike',
-  'model',
-  'cta',
-];
+const STEP_ORDER: StepId[] = ['subscriptions', 'privacy', 'aiFreedom', 'model', 'cta'];
+
+function buildPersonalizedPitch(answers: {
+  tiredOfSubs: TiredOfSubs;
+  privacy: PrivacyWorry;
+  aiFreedom: AiFreedom;
+}): { headline: string; body: string } {
+  const { tiredOfSubs, privacy, aiFreedom } = answers;
+  const frustrated = tiredOfSubs === 'frustrated';
+  const prefersLocal = privacy === 'prefer_local';
+  const wantsAiChoice = aiFreedom === 'want_choice';
+
+  let headline = "Here's why Pro may fit you";
+  if (frustrated && prefersLocal) {
+    headline = 'Since you value privacy and hate subscription fatigue';
+  } else if (frustrated) {
+    headline = "Since you're tired of subscription pressure";
+  } else if (prefersLocal) {
+    headline = 'Since you want your files on your device—not a random company cloud';
+  } else if (wantsAiChoice) {
+    headline = 'Since you want to choose your own AI tools';
+  }
+
+  let body =
+    'Pro removes Free limits (25 documents, 5 categories, 10 tags) so you can grow your vault. One purchase—yours forever, no monthly bill.\n\n';
+
+  if (prefersLocal) {
+    body +=
+      'Your vault stays on your device for everyday use. Optional Google Drive sync goes only to the Google account you connect.\n\n';
+  } else if (privacy === 'trust') {
+    body += 'You still get unlimited room, full backup tools, and the complete prompt library with a single one-time unlock.\n\n';
+  }
+
+  if (wantsAiChoice) {
+    body +=
+      'The full prompt library and sharing flow let you use ChatGPT, Gemini, Copilot, or others when you choose—no lock-in to our stack.\n\n';
+  }
+
+  body += 'Unlock once, own it forever.';
+  return { headline, body };
+}
+
+/** Feedback copy for the current question, derived from answers (persists when using Back/Next). */
+function feedbackForQuestion(
+  step: 'subscriptions' | 'privacy' | 'aiFreedom',
+  tiredOfSubs: TiredOfSubs,
+  privacy: PrivacyWorry,
+  aiFreedom: AiFreedom
+): string | null {
+  switch (step) {
+    case 'subscriptions':
+      if (tiredOfSubs === 'frustrated') {
+        return "We agree. That's why MyOwnSafe Pro is a strict one-time payment—no subscriptions.";
+      }
+      if (tiredOfSubs === 'dont_mind') {
+        return 'Fair enough. Pro is still a single payment forever whenever you want unlimited room.';
+      }
+      return null;
+    case 'privacy':
+      if (privacy === 'prefer_local') {
+        return 'Good match: your vault stays on your device by default. Optional Drive is your Google account, your rules.';
+      }
+      if (privacy === 'trust') {
+        return 'Noted. Pro still gives you unlimited slots, backup, and the full prompt library when you want more power.';
+      }
+      return null;
+    case 'aiFreedom':
+      if (aiFreedom === 'want_choice') {
+        return 'Pro unlocks the full prompt library and sharing so you use whichever AI app you trust.';
+      }
+      if (aiFreedom === 'fine') {
+        return 'Understood. Pro still removes vault limits with one purchase—no monthly fees.';
+      }
+      return null;
+    default:
+      return null;
+  }
+}
 
 export function QuizWhyPro({ onUpgrade, onClose }: Props) {
+  const isPro = useAppStore((s) => s.isPro);
   const [stepIndex, setStepIndex] = useState(0);
-  const [storageAnswer, setStorageAnswer] = useState<StorageAnswer>(null);
-  const [cloudTrustAnswer, setCloudTrustAnswer] = useState<CloudTrustAnswer>(null);
-  const [controlAnswer, setControlAnswer] = useState<ControlAnswer>(null);
-  const [paymentsAnswer, setPaymentsAnswer] = useState<PaymentsAnswer>(null);
-  const [valueAnswer, setValueAnswer] = useState<ValueAnswer>(null);
-  const [aiScannerUsedAnswer, setAiScannerUsedAnswer] = useState<AiScannerUsedAnswer>(null);
-  const [aiScannerDislikeAnswer, setAiScannerDislikeAnswer] = useState<AiScannerDislikeAnswer>(null);
+  const [tiredOfSubs, setTiredOfSubs] = useState<TiredOfSubs>(null);
+  const [privacy, setPrivacy] = useState<PrivacyWorry>(null);
+  const [aiFreedom, setAiFreedom] = useState<AiFreedom>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (isPro) {
+        setHydrated(true);
+        return;
+      }
+      try {
+        const data = await loadQuizWhyProState();
+        if (cancelled) return;
+        setTiredOfSubs(data.tiredOfSubs);
+        setPrivacy(data.privacy);
+        setAiFreedom(data.aiFreedom);
+        setStepIndex(data.stepIndex);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPro]);
 
   const currentStep = STEP_ORDER[stepIndex];
 
-  const shouldSkipStep = (id: StepId) => {
-    if (id === 'cloudTrust' && storageAnswer === 'device') {
-      return true;
+  const currentQuestionFeedback = useMemo(() => {
+    if (currentStep === 'subscriptions' || currentStep === 'privacy' || currentStep === 'aiFreedom') {
+      return feedbackForQuestion(currentStep, tiredOfSubs, privacy, aiFreedom);
     }
-    if (id === 'value' && paymentsAnswer !== 'yes') {
-      return true;
+    return null;
+  }, [currentStep, tiredOfSubs, privacy, aiFreedom]);
+
+  const hasAnswerForCurrentQuestion = useMemo(() => {
+    switch (currentStep) {
+      case 'subscriptions':
+        return tiredOfSubs !== null;
+      case 'privacy':
+        return privacy !== null;
+      case 'aiFreedom':
+        return aiFreedom !== null;
+      default:
+        return false;
     }
-    if (id === 'aiScannerDislike' && aiScannerUsedAnswer !== 'yes') {
-      return true;
-    }
-    return false;
-  };
+  }, [currentStep, tiredOfSubs, privacy, aiFreedom]);
 
   const goNext = () => {
-    let next = stepIndex + 1;
-    while (next < STEP_ORDER.length && shouldSkipStep(STEP_ORDER[next])) {
-      next += 1;
-    }
-    if (next < STEP_ORDER.length) {
-      setStepIndex(next);
-    }
+    setStepIndex((i) => {
+      const next = Math.min(i + 1, STEP_ORDER.length - 1);
+      void persistQuizStepIndex(next);
+      return next;
+    });
   };
 
   const goBack = () => {
-    let prev = stepIndex - 1;
-    while (prev >= 0 && shouldSkipStep(STEP_ORDER[prev])) {
-      prev -= 1;
-    }
-    if (prev >= 0) {
-      setStepIndex(prev);
-    }
+    setStepIndex((i) => {
+      const prev = Math.max(0, i - 1);
+      void persistQuizStepIndex(prev);
+      return prev;
+    });
   };
-
-  const hasPrevious = useMemo(() => {
-    for (let i = stepIndex - 1; i >= 0; i -= 1) {
-      if (!shouldSkipStep(STEP_ORDER[i])) return true;
-    }
-    return false;
-  }, [stepIndex, storageAnswer, paymentsAnswer]);
-
-  const isLastQuestionStep = useMemo(() => {
-    // Last question step before CTA in the dynamic flow.
-    return currentStep === 'model';
-  }, [currentStep]);
 
   const questionTitle = (() => {
     switch (currentStep) {
-      case 'storage':
-        return 'Where do you usually store your important documents today?';
-      case 'cloudTrust':
-        return 'How do you feel about how cloud providers use your data?';
-      case 'control':
-        return 'How important is it that only you control access to your documents?';
-      case 'payments':
-        return 'Do you currently pay monthly or yearly fees for storage or document apps?';
-      case 'value':
-        return 'Do you feel the service you are paying for is worth the ongoing cost?';
-      case 'aiScannerUsed':
-        return 'Have you used AI-powered scanner apps?';
-      case 'aiScannerDislike':
-        return 'What did you dislike most?';
+      case 'subscriptions':
+        return 'Are you tired of scanner apps forcing you into expensive monthly subscriptions?';
+      case 'privacy':
+        return 'Does it worry you that many document apps upload your sensitive PDFs to their own cloud servers?';
+      case 'aiFreedom':
+        return 'Do you want to use ChatGPT, Gemini, or Copilot with your documents—on your terms—instead of locking everything into one app?';
       case 'model':
-        return "What's blocking you right now?";
+        return '';
       case 'cta':
         return 'What would you like to do next?';
       default:
@@ -122,254 +188,181 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
     }
   })();
 
-  const modelDescription =
-    'Pro removes the free limits (25 documents, 5 categories, 10 tags) so you can keep adding right now.\n' +
-    'One-time purchase. No subscription, no recurring fees.\n' +
-    'Your vault stays on your device, and you can export a copy to any AI app when you want.';
+  const pitch = useMemo(
+    () =>
+      buildPersonalizedPitch({
+        tiredOfSubs,
+        privacy,
+        aiFreedom,
+      }),
+    [tiredOfSubs, privacy, aiFreedom]
+  );
 
-  const hasSelection = (() => {
-    switch (currentStep) {
-      case 'storage':
-        return storageAnswer !== null;
-      case 'cloudTrust':
-        return cloudTrustAnswer !== null;
-      case 'control':
-        return controlAnswer !== null;
-      case 'payments':
-        return paymentsAnswer !== null;
-      case 'value':
-        return valueAnswer !== null;
-      case 'aiScannerUsed':
-        return aiScannerUsedAnswer !== null;
-      case 'aiScannerDislike':
-        return aiScannerDislikeAnswer !== null;
-      case 'model':
-        return true; // model step just presents info with options right below
-      default:
-        return false;
-    }
-  })();
+  const onPickSubs = (v: NonNullable<TiredOfSubs>) => {
+    if (tiredOfSubs !== null) return;
+    setTiredOfSubs(v);
+    void persistQuizSubscription(v);
+  };
 
-  const renderOptions = () => {
-    if (currentStep === 'storage') {
+  const onPickPrivacy = (v: NonNullable<PrivacyWorry>) => {
+    if (privacy !== null) return;
+    setPrivacy(v);
+    void persistQuizPrivacy(v);
+  };
+
+  const onPickAi = (v: NonNullable<AiFreedom>) => {
+    if (aiFreedom !== null) return;
+    setAiFreedom(v);
+    void persistQuizAiFreedom(v);
+  };
+
+  const renderQuestionOptions = () => {
+    if (currentStep === 'subscriptions') {
       return (
         <>
           <QuizOption
-            label="Mostly in cloud services (Google Drive, iCloud, Dropbox…)"
-            selected={storageAnswer === 'cloud'}
-            onPress={() => setStorageAnswer('cloud')}
+            label="Yes — it's frustrating"
+            selected={tiredOfSubs === 'frustrated'}
+            locked={tiredOfSubs !== null}
+            onPress={() => onPickSubs('frustrated')}
           />
           <QuizOption
-            label="Mostly on my phone"
-            selected={storageAnswer === 'device'}
-            onPress={() => setStorageAnswer('device')}
+            label="No — I don't mind"
+            selected={tiredOfSubs === 'dont_mind'}
+            locked={tiredOfSubs !== null}
+            onPress={() => onPickSubs('dont_mind')}
           />
-          <QuizOption
-            label="A mix of both"
-            selected={storageAnswer === 'mixed'}
-            onPress={() => setStorageAnswer('mixed')}
-          />
+          {tiredOfSubs !== null ? (
+            <Text style={styles.lockedHint}>
+              Saved on this device. You can read the note above again; this choice can’t be changed.
+            </Text>
+          ) : null}
         </>
       );
     }
-    if (currentStep === 'cloudTrust') {
+    if (currentStep === 'privacy') {
       return (
         <>
           <QuizOption
-            label="I fully trust them"
-            selected={cloudTrustAnswer === 'trust'}
-            onPress={() => setCloudTrustAnswer('trust')}
+            label="Yes — I prefer on-device storage or my own Google Drive"
+            selected={privacy === 'prefer_local'}
+            locked={privacy !== null}
+            onPress={() => onPickPrivacy('prefer_local')}
           />
           <QuizOption
-            label="I’m not sure, I haven’t really thought about it"
-            selected={cloudTrustAnswer === 'unsure'}
-            onPress={() => setCloudTrustAnswer('unsure')}
+            label="No — I generally trust them"
+            selected={privacy === 'trust'}
+            locked={privacy !== null}
+            onPress={() => onPickPrivacy('trust')}
           />
-          <QuizOption
-            label="I don’t completely trust them"
-            selected={cloudTrustAnswer === 'dont_trust'}
-            onPress={() => setCloudTrustAnswer('dont_trust')}
-          />
+          {privacy !== null ? (
+            <Text style={styles.lockedHint}>
+              Saved on this device. You can read the note above again; this choice can’t be changed.
+            </Text>
+          ) : null}
         </>
       );
     }
-    if (currentStep === 'control') {
+    if (currentStep === 'aiFreedom') {
       return (
         <>
           <QuizOption
-            label="Not very important"
-            selected={controlAnswer === 'low'}
-            onPress={() => setControlAnswer('low')}
+            label="Yes — I want that flexibility"
+            selected={aiFreedom === 'want_choice'}
+            locked={aiFreedom !== null}
+            onPress={() => onPickAi('want_choice')}
           />
           <QuizOption
-            label="Nice to have"
-            selected={controlAnswer === 'medium'}
-            onPress={() => setControlAnswer('medium')}
+            label="Not really a priority"
+            selected={aiFreedom === 'fine'}
+            locked={aiFreedom !== null}
+            onPress={() => onPickAi('fine')}
           />
-          <QuizOption
-            label="Very important – only I should have access"
-            selected={controlAnswer === 'high'}
-            onPress={() => setControlAnswer('high')}
-          />
-        </>
-      );
-    }
-    if (currentStep === 'payments') {
-      return (
-        <>
-          <QuizOption
-            label="Yes, I pay for one or more services"
-            selected={paymentsAnswer === 'yes'}
-            onPress={() => setPaymentsAnswer('yes')}
-          />
-          <QuizOption
-            label="No, I’m using free services"
-            selected={paymentsAnswer === 'no'}
-            onPress={() => setPaymentsAnswer('no')}
-          />
-          <QuizOption
-            label="I’m not sure / don’t remember"
-            selected={paymentsAnswer === 'unknown'}
-            onPress={() => setPaymentsAnswer('unknown')}
-          />
-        </>
-      );
-    }
-    if (currentStep === 'value') {
-      return (
-        <>
-          <QuizOption
-            label="Yes, absolutely worth it"
-            selected={valueAnswer === 'worth_it'}
-            onPress={() => setValueAnswer('worth_it')}
-          />
-          <QuizOption
-            label="Not sure / sometimes"
-            selected={valueAnswer === 'unsure'}
-            onPress={() => setValueAnswer('unsure')}
-          />
-          <QuizOption
-            label="Not really, it feels expensive"
-            selected={valueAnswer === 'expensive'}
-            onPress={() => setValueAnswer('expensive')}
-          />
-        </>
-      );
-    }
-    if (currentStep === 'aiScannerUsed') {
-      return (
-        <>
-          <QuizOption
-            label="Yes"
-            selected={aiScannerUsedAnswer === 'yes'}
-            onPress={() => setAiScannerUsedAnswer('yes')}
-          />
-          <QuizOption
-            label="No"
-            selected={aiScannerUsedAnswer === 'no'}
-            onPress={() => setAiScannerUsedAnswer('no')}
-          />
-          <QuizOption
-            label="Not sure"
-            selected={aiScannerUsedAnswer === 'not_sure'}
-            onPress={() => setAiScannerUsedAnswer('not_sure')}
-          />
-        </>
-      );
-    }
-    if (currentStep === 'aiScannerDislike') {
-      return (
-        <>
-          <QuizOption
-            label="Subscription cost"
-            selected={aiScannerDislikeAnswer === 'sub_cost'}
-            onPress={() => setAiScannerDislikeAnswer('sub_cost')}
-          />
-          <QuizOption
-            label="Uploading sensitive docs"
-            selected={aiScannerDislikeAnswer === 'sensitive_uploads'}
-            onPress={() => setAiScannerDislikeAnswer('sensitive_uploads')}
-          />
-          <QuizOption
-            label="Ads & tracking"
-            selected={aiScannerDislikeAnswer === 'ads_tracking'}
-            onPress={() => setAiScannerDislikeAnswer('ads_tracking')}
-          />
-          <QuizOption
-            label="Complexity"
-            selected={aiScannerDislikeAnswer === 'complexity'}
-            onPress={() => setAiScannerDislikeAnswer('complexity')}
-          />
-        </>
-      );
-    }
-    if (currentStep === 'model') {
-      return (
-        <>
-          <Text style={styles.modelText}>{modelDescription}</Text>
-          <View style={styles.modelOptions}>
-            <QuizOption
-              label="Unlock Pro (One-time)"
-              selected={false}
-              onPress={onUpgrade}
-            />
-            <QuizOption
-              label="Remove my limits now"
-              selected={false}
-              onPress={onUpgrade}
-            />
-            <QuizOption
-              label="I’m not sure yet"
-              selected={false}
-              onPress={goNext}
-            />
-            <QuizOption
-              label="I prefer subscriptions"
-              selected={false}
-              onPress={goNext}
-            />
-          </View>
+          {aiFreedom !== null ? (
+            <Text style={styles.lockedHint}>
+              Saved on this device. You can read the note above again; this choice can’t be changed.
+            </Text>
+          ) : null}
         </>
       );
     }
     return null;
   };
 
-  const renderCtaStep = () => {
-    return (
-      <View style={styles.ctaContainer}>
+  const renderModelStep = () => (
+    <>
+      <Text style={styles.modelHeadline}>{pitch.headline}</Text>
+      <Text style={styles.modelText}>{pitch.body}</Text>
+      <View style={styles.modelActions}>
         <PillButton
-          label="Unlock Pro (One-time) — remove limits now"
+          label="Unlock Pro (One-time)"
           variant="primary"
           size="lg"
           onPress={onUpgrade}
-          style={styles.ctaPrimary}
+          style={styles.modelPrimaryBtn}
         />
-        <PillButton
-          label="Not now — keep using Free"
-          variant="ghost"
-          size="md"
-          onPress={onClose || (() => {})}
-        />
-        <Text style={styles.ctaHint}>
-          You can upgrade anytime from Settings. Your existing documents stay on your device.
-        </Text>
+        <TouchableOpacity onPress={goNext} activeOpacity={0.7} style={styles.modelSecondaryWrap}>
+          <Text style={styles.modelSecondaryText}>Not sure yet — see more options</Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
+  const renderCtaStep = () => (
+    <View style={styles.ctaContainer}>
+      <PillButton
+        label="Unlock Pro (One-time) — remove limits now"
+        variant="primary"
+        size="lg"
+        onPress={onUpgrade}
+        style={styles.ctaPrimary}
+      />
+      <PillButton
+        label="Not now — keep using Free"
+        variant="ghost"
+        size="md"
+        onPress={onClose || (() => {})}
+      />
+      <Text style={styles.ctaHint}>
+        You can upgrade anytime from Settings. Your existing documents stay on your device.
+      </Text>
+    </View>
+  );
+
+  const stepBadge = useMemo(() => {
+    if (currentStep === 'cta') return 'Summary';
+    if (currentStep === 'model') return 'Your pitch';
+    const q = stepIndex + 1;
+    return `Question ${q} of 3`;
+  }, [currentStep, stepIndex]);
+
+  const isQuestionStep =
+    currentStep === 'subscriptions' || currentStep === 'privacy' || currentStep === 'aiFreedom';
+  const nextLabel = currentStep === 'aiFreedom' ? 'See your fit' : 'Next';
+
+  if (isPro) {
+    return null;
+  }
+
+  if (!hydrated) {
+    return (
+      <View style={[styles.card, styles.loadingCard]}>
+        <ActivityIndicator color={Colors.primary} size="small" />
       </View>
     );
-  };
-
-  const stepLabel = useMemo(() => {
-    const displayIndex = stepIndex + 1;
-    if (currentStep === 'cta') {
-      return 'Summary';
-    }
-    return `Step ${displayIndex}`;
-  }, [stepIndex, currentStep]);
+  }
 
   return (
     <View style={styles.card}>
+      <Text style={styles.framingTitle}>Is Pro right for you?</Text>
+      <Text style={styles.framingSub}>{"Let's find your fit—in under a minute."}</Text>
+      <Text style={styles.framingRule}>
+        Your answers are saved on this device and stay the same after you leave, restart the app, or come back later—you
+        can’t change a choice once it’s tapped. This helps us tailor the pitch; upgrading clears this quiz.
+      </Text>
+
       <View style={styles.headerRow}>
-        <Text style={styles.stepLabel}>{stepLabel}</Text>
+        <Text style={styles.stepLabel}>{stepBadge}</Text>
         {onClose && (
           <TouchableOpacity
             style={styles.closeButton}
@@ -380,25 +373,38 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
           </TouchableOpacity>
         )}
       </View>
-      <Text style={styles.question}>{questionTitle}</Text>
-      <View style={styles.options}>{currentStep === 'cta' ? renderCtaStep() : renderOptions()}</View>
 
-      {currentStep !== 'cta' && currentStep !== 'model' && (
+      {questionTitle ? <Text style={styles.question}>{questionTitle}</Text> : null}
+
+      {currentQuestionFeedback ? (
+        <View style={styles.microFeedbackBox}>
+          <Ionicons name="checkmark-circle" size={20} color={Colors.primary} style={styles.microIcon} />
+          <Text style={styles.microFeedbackText}>{currentQuestionFeedback}</Text>
+        </View>
+      ) : null}
+
+      <View style={styles.options}>
+        {isQuestionStep ? renderQuestionOptions() : null}
+        {currentStep === 'model' ? renderModelStep() : null}
+        {currentStep === 'cta' ? renderCtaStep() : null}
+      </View>
+
+      {isQuestionStep && (
         <View style={styles.navRow}>
+          <PillButton label="Back" variant="ghost" size="sm" onPress={goBack} disabled={stepIndex === 0} />
           <PillButton
-            label="Back"
-            variant="ghost"
-            size="sm"
-            onPress={goBack}
-            disabled={!hasPrevious}
-          />
-          <PillButton
-            label={isLastQuestionStep ? 'Continue' : 'Next'}
+            label={nextLabel}
             variant="primary"
             size="sm"
             onPress={goNext}
-            disabled={!hasSelection}
+            disabled={!hasAnswerForCurrentQuestion}
           />
+        </View>
+      )}
+
+      {currentStep === 'model' && (
+        <View style={styles.navRow}>
+          <PillButton label="Back" variant="ghost" size="sm" onPress={goBack} />
         </View>
       )}
     </View>
@@ -408,15 +414,17 @@ export function QuizWhyPro({ onUpgrade, onClose }: Props) {
 type QuizOptionProps = {
   label: string;
   selected: boolean;
+  locked?: boolean;
   onPress: () => void;
 };
 
-function QuizOption({ label, selected, onPress }: QuizOptionProps) {
+function QuizOption({ label, selected, locked, onPress }: QuizOptionProps) {
   return (
     <TouchableOpacity
-      style={[styles.option, selected && styles.optionSelected]}
+      style={[styles.option, selected && styles.optionSelected, locked && styles.optionLocked]}
       onPress={onPress}
       activeOpacity={0.7}
+      disabled={locked}
     >
       <View style={styles.optionContent}>
         <Text style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{label}</Text>
@@ -435,6 +443,31 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     marginTop: Spacing.xs,
     gap: Spacing.sm,
+  },
+  loadingCard: {
+    minHeight: 88,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  framingTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeMd,
+    fontWeight: Typography.fontWeightBold,
+    textAlign: 'center',
+  },
+  framingSub: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    textAlign: 'center',
+    marginBottom: Spacing.xs,
+  },
+  framingRule: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.xs,
   },
   headerRow: {
     flexDirection: 'row',
@@ -458,6 +491,26 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
     marginBottom: Spacing.sm,
   },
+  microFeedbackBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    backgroundColor: 'rgba(16, 163, 127, 0.12)',
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 163, 127, 0.35)',
+  },
+  microIcon: {
+    marginTop: 2,
+  },
+  microFeedbackText: {
+    flex: 1,
+    color: Colors.text,
+    fontSize: Typography.fontSizeSm,
+    lineHeight: 20,
+  },
   options: {
     gap: Spacing.sm,
   },
@@ -473,6 +526,15 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
     backgroundColor: 'rgba(16, 163, 127, 0.14)',
   },
+  optionLocked: {
+    opacity: 0.85,
+  },
+  lockedHint: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    lineHeight: 18,
+    marginTop: Spacing.xs,
+  },
   optionContent: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -485,20 +547,39 @@ const styles = StyleSheet.create({
   optionLabelSelected: {
     color: Colors.text,
   },
+  modelHeadline: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightBold,
+    marginBottom: Spacing.sm,
+  },
   modelText: {
     color: Colors.textSecondary,
     fontSize: Typography.fontSizeSm,
     lineHeight: 20,
     marginBottom: Spacing.md,
   },
-  modelOptions: {
+  modelActions: {
     gap: Spacing.sm,
+  },
+  modelPrimaryBtn: {
+    alignSelf: 'stretch',
+  },
+  modelSecondaryWrap: {
+    alignSelf: 'center',
+    paddingVertical: Spacing.sm,
+  },
+  modelSecondaryText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
   },
   navRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: Spacing.md,
+    gap: Spacing.md,
   },
   ctaContainer: {
     gap: Spacing.sm,
@@ -512,4 +593,3 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSizeXs,
   },
 });
-

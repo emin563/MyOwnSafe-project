@@ -6,9 +6,11 @@ import {
 import { getSetting, setSetting } from '@/db/settings';
 import {
   clearGoogleDriveConnection,
+  ensureGoogleDriveVaultFolderReady,
   isGoogleDriveConnected,
   notifyGoogleDriveAccountLinkChanged,
   persistGoogleDriveTokenFromAuth,
+  uploadAllVaultDocumentsToGoogleDriveNow,
 } from '@/services/GoogleDriveSync';
 import { Ionicons } from '@expo/vector-icons';
 import { TokenResponse } from 'expo-auth-session/build/TokenRequest';
@@ -43,6 +45,8 @@ export default function GoogleDriveOAuthPanel() {
   const [connected, setConnected] = useState(false);
   const [autoUpload, setAutoUpload] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [ensureVaultBusy, setEnsureVaultBusy] = useState(false);
+  const [backupNowBusy, setBackupNowBusy] = useState(false);
   const connectSessionRef = useRef(false);
 
   const [request, response, promptAsync] = Google.useAuthRequest(
@@ -153,6 +157,51 @@ export default function GoogleDriveOAuthPanel() {
     notifyGoogleDriveAccountLinkChanged();
   };
 
+  const handleEnsureVaultFolder = async () => {
+    setEnsureVaultBusy(true);
+    try {
+      await ensureGoogleDriveVaultFolderReady();
+      notifyGoogleDriveAccountLinkChanged();
+      Alert.alert(
+        'Google Drive',
+        'The Vault folder is ready in your Drive. New uploads will use this folder (when auto-upload is on, or the next time you save a document).'
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not create or find the Vault folder.';
+      Alert.alert('Google Drive', msg);
+    } finally {
+      setEnsureVaultBusy(false);
+    }
+  };
+
+  const handleBackupToDriveNow = async () => {
+    if (!autoUpload) {
+      Alert.alert(
+        'Google Drive',
+        'Turn on auto-upload first. Then you can back up existing vault files to the Vault folder in one tap.'
+      );
+      return;
+    }
+    setBackupNowBusy(true);
+    try {
+      const r = await uploadAllVaultDocumentsToGoogleDriveNow();
+      const parts = [
+        `Uploaded ${r.uploaded} of ${r.total} document file(s).`,
+        r.skipped > 0 ? `${r.skipped} skipped (no file path).` : null,
+        r.failed > 0 ? `${r.failed} failed.` : null,
+      ].filter(Boolean);
+      Alert.alert(
+        'Google Drive',
+        parts.join(' ') + (r.firstError && r.failed > 0 ? ` First error: ${r.firstError}` : '')
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not back up to Drive.';
+      Alert.alert('Google Drive', msg);
+    } finally {
+      setBackupNowBusy(false);
+    }
+  };
+
   return (
     <View style={styles.block}>
       {!connected ? (
@@ -168,7 +217,7 @@ export default function GoogleDriveOAuthPanel() {
           <View style={styles.rowContent}>
             <Text style={styles.rowLabel}>Connect Google Drive</Text>
             <Text style={styles.rowHint}>
-              With auto-upload on, new documents and backup zips copy into a &quot;Vault&quot; folder in the{' '}
+              With auto-upload on, new and updated documents copy into a &quot;Vault&quot; folder in the{' '}
               <Text style={{ fontWeight: '600' }}>Google Drive</Text> app (not Google Photos). Open Drive → browse
               folders → Vault.
             </Text>
@@ -190,6 +239,48 @@ export default function GoogleDriveOAuthPanel() {
             </View>
           </View>
           <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => {
+              void handleEnsureVaultFolder();
+            }}
+            disabled={ensureVaultBusy}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="folder-open-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Create or restore Vault folder</Text>
+              <Text style={styles.rowHint}>
+                Creates the &quot;Vault&quot; folder in Drive if it is missing (for example, if you deleted it).
+                You can use this without turning on auto-upload.
+              </Text>
+            </View>
+            {ensureVaultBusy ? <ActivityIndicator color={Colors.primary} size="small" /> : null}
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => {
+              void handleBackupToDriveNow();
+            }}
+            disabled={backupNowBusy}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="arrow-up-circle-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Back up to Drive now</Text>
+              <Text style={styles.rowHint}>
+                With auto-upload on, uploads every vault document file to the Vault folder now (for example after
+                creating or restoring the folder). Re-running may add duplicate files in Drive.
+              </Text>
+            </View>
+            {backupNowBusy ? <ActivityIndicator color={Colors.primary} size="small" /> : null}
+          </TouchableOpacity>
+          <View style={styles.divider} />
           <View style={styles.row}>
             <View style={styles.rowIcon}>
               <Ionicons name="cloud-upload-outline" size={20} color={Colors.primary} />
@@ -197,7 +288,8 @@ export default function GoogleDriveOAuthPanel() {
             <View style={styles.rowContent}>
               <Text style={styles.rowLabel}>Auto-upload to Drive</Text>
               <Text style={styles.rowHint}>
-                When enabled, each saved document and each backup zip is copied to Vault in the Drive app (Android).
+                When enabled, each saved document is copied to Vault in the Drive app (Android). Full vault backups
+                stay local (export as .zip from Data portability).
               </Text>
             </View>
             <Switch

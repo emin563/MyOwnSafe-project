@@ -1,6 +1,6 @@
+import { DOCUMENT_LIST_SELECT_D } from './documents';
 import { getDb } from './schema';
-import type { Tag } from './types';
-import type { Document } from './types';
+import type { Document, Tag } from './types';
 
 export async function getAllTags(): Promise<Tag[]> {
   const db = await getDb();
@@ -29,6 +29,20 @@ export async function createTag(name: string): Promise<number> {
   return result.lastInsertRowId;
 }
 
+export async function updateTag(id: number, name: string): Promise<void> {
+  const db = await getDb();
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Tag name cannot be empty');
+  const conflict = await db.getFirstAsync<{ id: number }>(
+    'SELECT id FROM tags WHERE name = ? AND id != ?',
+    [trimmed, id]
+  );
+  if (conflict) {
+    throw new Error('DUPLICATE_TAG_NAME');
+  }
+  await db.runAsync('UPDATE tags SET name = ? WHERE id = ?', [trimmed, id]);
+}
+
 export async function deleteTag(id: number): Promise<void> {
   const db = await getDb();
   await db.runAsync('DELETE FROM tags WHERE id = ?', [id]);
@@ -53,6 +67,33 @@ export async function addTagToDocument(documentId: number, tagId: number): Promi
   );
 }
 
+export async function addTagsToDocument(documentId: number, tagIds: number[]): Promise<void> {
+  const uniqueTagIds = Array.from(new Set(tagIds.filter((id) => Number.isFinite(id))));
+  if (uniqueTagIds.length === 0) return;
+
+  const db = await getDb();
+  const placeholders = uniqueTagIds.map(() => '(?, ?)').join(', ');
+  const params = uniqueTagIds.flatMap((tagId) => [documentId, tagId]);
+  await db.runAsync(
+    `INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES ${placeholders}`,
+    params
+  );
+}
+
+/** One INSERT for many documents sharing the same tag (bulk toolbar “Tag”). */
+export async function addTagToDocuments(documentIds: number[], tagId: number): Promise<void> {
+  const ids = Array.from(new Set(documentIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return;
+
+  const db = await getDb();
+  const placeholders = ids.map(() => '(?, ?)').join(', ');
+  const params = ids.flatMap((documentId) => [documentId, tagId]);
+  await db.runAsync(
+    `INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES ${placeholders}`,
+    params
+  );
+}
+
 export async function removeTagFromDocument(documentId: number, tagId: number): Promise<void> {
   const db = await getDb();
   await db.runAsync('DELETE FROM document_tags WHERE document_id = ? AND tag_id = ?', [
@@ -64,7 +105,7 @@ export async function removeTagFromDocument(documentId: number, tagId: number): 
 export async function getDocumentsByTag(tagId: number): Promise<Document[]> {
   const db = await getDb();
   return db.getAllAsync<Document>(
-    `SELECT d.* FROM documents d
+    `SELECT ${DOCUMENT_LIST_SELECT_D} FROM documents d
      INNER JOIN document_tags dt ON dt.document_id = d.id
      WHERE dt.tag_id = ?
      ORDER BY d.updated_at DESC`,

@@ -22,7 +22,7 @@ export function GoogleDriveLinkStatusRow() {
     : status.linked
       ? status.autoUploadEnabled
         ? 'Auto-upload to Drive is on.'
-        : 'Turn on auto-upload below to sync new files and backups.'
+        : 'Turn on auto-upload below to sync new files to Drive.'
       : 'Tap Connect Google Drive below to link your account.';
 
   return (

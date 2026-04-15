@@ -1,53 +1,90 @@
-import { create } from 'zustand';
-import type { Category, Document, FileType, Tag } from '@/db/types';
 import {
-  getCategories,
-  createCategory,
-  updateCategory,
-  deleteCategory,
-  getTotalCategoryCount,
+    createCategory,
+    deleteCategory,
+    getCategories,
+    getTotalCategoryCount,
+    updateCategory,
 } from '@/db/categories';
 import {
-  getAllTags,
-  createTag,
-  deleteTag,
-  getTagsForDocument,
-  addTagToDocument,
-  removeTagFromDocument,
-  getDocumentsByTag,
-  getOrCreateTagByName,
-  getTagIdByName,
-  getTotalTagCount,
-} from '@/db/tags';
-import {
-  getDocuments,
-  createDocument,
-  updateDocument,
-  deleteDocument,
-  searchDocuments,
-  updateDocumentNotificationId,
-  updateDocumentOcrText,
-  getTotalFileCount,
+    createDocument,
+    deleteDocument,
+    getDocumentById,
+    getDocuments,
+    getTotalFileCount,
+    searchDocuments,
+    updateDocument,
+    updateDocumentNotificationId,
+    updateDocumentOcrText,
 } from '@/db/documents';
-import { getSetting, setSetting } from '@/db/settings';
-import type { OcrLanguageCode } from '@/services/ocrLanguages';
-import { normalizeOcrLanguageCode } from '@/services/ocrLanguages';
+import { getSetting, getSettings, setSetting } from '@/db/settings';
+import {
+    addTagsToDocument,
+    addTagToDocument,
+    addTagToDocuments,
+    createTag,
+    deleteTag,
+    getAllTags,
+    getDocumentsByTag,
+    getOrCreateTagByName,
+    getTagIdByName,
+    getTagsForDocument,
+    getTotalTagCount,
+    removeTagFromDocument,
+    updateTag,
+} from '@/db/tags';
+import type { Category, Document, FileType, Tag } from '@/db/types';
+import { maybeUploadVaultDocumentToGoogleDrive } from '@/services/GoogleDriveSync';
+import { LimitError } from '@/services/LimitError';
+import { getFreeLimit, getOcrReadTrialsRemaining, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
 import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
 import { normalizeMlKitScannerMode } from '@/services/mlKitScannerMode';
 import {
-  scheduleExpiryNotification,
-  cancelNotification,
+    cancelNotification,
+    scheduleExpiryNotification,
 } from '@/services/NotificationService';
-import { copyFileInArchive } from '@/services/StorageService';
-import { maybeUploadVaultDocumentToGoogleDrive } from '@/services/GoogleDriveSync';
 import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
-import { getFreeLimit, getOcrReadTrialsRemaining, SEEDED_DEFAULT_CATEGORIES } from '@/services/limits';
-import { LimitError } from '@/services/LimitError';
+import type { OcrLanguageCode } from '@/services/ocrLanguages';
+import { normalizeOcrLanguageCode } from '@/services/ocrLanguages';
 import {
-  purchasePro as rcPurchasePro,
-  restorePurchases as rcRestorePurchases,
-  checkProEntitlement,
+    purchasePro as rcPurchasePro,
+    restorePurchases as rcRestorePurchases,
+    syncProEntitlementFromRevenueCat,
 } from '@/services/PurchaseService';
+import { clearQuizWhyProData } from '@/services/quizWhyProStorage';
+import { copyFileInArchive } from '@/services/StorageService';
+import { create } from 'zustand';
+
+/** Dev-only override; `null` means use RevenueCat / Play entitlement. */
+export type DevProPreview = null | 'force_free' | 'force_pro';
+
+const SETTING_PRO_BILLING = 'proBillingEntitled';
+const SETTING_DEV_PRO_PREVIEW = 'devProPreview';
+const SETTING_PRIVACY_ONBOARDING = 'privacyOnboardingCompleted';
+
+export function computeEffectivePro(
+  billingProEntitled: boolean,
+  devProPreview: DevProPreview
+): boolean {
+  if (devProPreview !== null) {
+    return devProPreview === 'force_pro';
+  }
+  return billingProEntitled;
+}
+
+function parseDevProPreviewRaw(raw: string | null): DevProPreview {
+  if (raw === 'force_free' || raw === 'force_pro') return raw;
+  return null;
+}
+
+async function loadBillingEntitledFromSettings(): Promise<boolean> {
+  let v = await getSetting(SETTING_PRO_BILLING);
+  if (v == null) {
+    const legacy = await getSetting('isPro');
+    v = legacy === 'true' ? 'true' : 'false';
+    await setSetting(SETTING_PRO_BILLING, v);
+  }
+  return v === 'true';
+}
 
 type AppStore = {
   categories: Category[];
@@ -68,8 +105,12 @@ type AppStore = {
   clearSelection: () => void;
   isDbReady: boolean;
 
-  // Pro
+  // Pro — isPro is effective (billing + optional dev preview); billingProEntitled is from RevenueCat
   isPro: boolean;
+  /** Last known Play / RevenueCat entitlement (ignores dev preview). */
+  billingProEntitled: boolean;
+  /** __DEV__ only: simulate Free or Pro without overwriting billing sync. */
+  devProPreview: DevProPreview;
   /** Timestamp (ms) of the very first app launch, for intro pricing eligibility. */
   firstLaunchAt: number | null;
   /** True when user is within the first 7 days after firstLaunchAt. */
@@ -99,6 +140,8 @@ type AppStore = {
    * Returns `true` if a trial was consumed (or user is Pro).
    */
   consumeOcrReadTrial: () => Promise<boolean>;
+  /** Consume up to `count` Free OCR trials in one write; returns number actually consumed. */
+  consumeOcrReadTrials: (count: number) => Promise<number>;
   /** Dev only: reset free OCR trials counter for testing. */
   resetOcrReadTrialsForDev: () => Promise<void>;
   /** User dismissed multi-page tested-limit disclaimer. */
@@ -107,9 +150,16 @@ type AppStore = {
   /** User dismissed Google multi-page scanner 100-page warning. */
   mlKitMultiPageWarningDismissed: boolean;
   setMlKitMultiPageWarningDismissed: (dismissed: boolean) => Promise<void>;
+  /** User dismissed Add flow tip about flat surface + lighting for ML Kit auto-scan. */
+  autoScanSurfaceTipDismissed: boolean;
+  setAutoScanSurfaceTipDismissed: (dismissed: boolean) => Promise<void>;
   /** User dismissed Settings one-shot notice about Google scanner / Drive and privacy. */
   googleExtensionsPrivacyTipDismissed: boolean;
   setGoogleExtensionsPrivacyTipDismissed: (dismissed: boolean) => Promise<void>;
+  /** True after first `loadSettings()` completes (for onboarding gate). */
+  settingsHydrated: boolean;
+  /** First-run privacy & permissions introduction; migrated to done for existing vaults. */
+  privacyOnboardingCompleted: boolean;
   ocrProcessingMode: 'auto' | 'document' | 'receipt' | 'handwritten';
   setOcrProcessingMode: (mode: 'auto' | 'document' | 'receipt' | 'handwritten') => Promise<void>;
   ocrLanguage: OcrLanguageCode;
@@ -137,10 +187,19 @@ type AppStore = {
   editCategory: (id: number, name: string, iconName?: string) => Promise<void>;
   removeCategory: (id: number) => Promise<void>;
 
+  /**
+   * Increments when document↔tag links change (add/remove/bulk/global delete/rename).
+   * Home list uses this to refresh per-document tag chips without relying only on document ID sets.
+   */
+  documentTagLinksVersion: number;
+
   loadTags: () => Promise<void>;
   addTag: (name: string) => Promise<number>;
+  editTag: (id: number, name: string) => Promise<void>;
   removeTag: (id: number) => Promise<void>;
   tagDocument: (documentId: number, tagId: number) => Promise<void>;
+  /** Apply one tag to many documents in a single batched INSERT (bulk toolbar). */
+  tagDocuments: (documentIds: number[], tagId: number) => Promise<void>;
   untagDocument: (documentId: number, tagId: number) => Promise<void>;
   getOrCreateTag: (name: string) => Promise<number>;
 
@@ -154,7 +213,7 @@ type AppStore = {
     purchasePrice?: number | null,
     expiryDate?: string | null,
     notes?: string | null,
-    options?: { copyOcrFromSource?: string; preOcrText?: string }
+    options?: { copyOcrFromSource?: string; preOcrText?: string; skipReload?: boolean }
   ) => Promise<number>;
   editDocument: (
     id: number,
@@ -164,15 +223,18 @@ type AppStore = {
     categoryId: number | null,
     purchasePrice?: number | null,
     expiryDate?: string | null,
-    notes?: string | null
+    notes?: string | null,
+    options?: { skipReload?: boolean }
   ) => Promise<void>;
-  removeDocument: (id: number) => Promise<void>;
+  removeDocument: (id: number, options?: { skipReload?: boolean }) => Promise<void>;
   duplicateDocument: (id: number) => Promise<number>;
   runSearch: (query: string) => Promise<void>;
 
   // Settings
   loadSettings: () => Promise<void>;
-  setIsPro: (value: boolean) => Promise<void>;
+  completePrivacyOnboarding: () => Promise<void>;
+  /** __DEV__ only: set Free/Pro simulation; pass null to follow store entitlement. */
+  setDevProPreview: (preview: DevProPreview) => Promise<void>;
   /** Trigger a real RevenueCat purchase and update Pro state on success. */
   purchasePro: () => Promise<{ success: boolean; cancelled?: boolean; message?: string }>;
   /** Restore a previous purchase via RevenueCat. */
@@ -190,6 +252,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   categories: [],
   documents: [],
   tags: [],
+  documentTagLinksVersion: 0,
   selectedCategoryId: null,
   selectedTagId: null,
   searchQuery: '',
@@ -200,6 +263,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   isDbReady: false,
   isPro: false,
+  billingProEntitled: false,
+  devProPreview: null,
   firstLaunchAt: null,
   isIntroEligible: false,
   vaultName: 'My Vault',
@@ -208,7 +273,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ocrReadTrialsUsed: 0,
   multiPageLimitDisclaimerDismissed: false,
   mlKitMultiPageWarningDismissed: false,
+  autoScanSurfaceTipDismissed: false,
   googleExtensionsPrivacyTipDismissed: false,
+  settingsHydrated: false,
+  privacyOnboardingCompleted: false,
   ocrProcessingMode: 'auto',
   ocrLanguage: 'auto',
   mlKitScannerMode: 'base',
@@ -238,26 +306,68 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   clearSelection: () => set({ selectionMode: false, selectedIds: [] }),
 
+  completePrivacyOnboarding: async () => {
+    await setSetting(SETTING_PRIVACY_ONBOARDING, '1');
+    set({ privacyOnboardingCompleted: true });
+  },
+
   loadSettings: async () => {
-    const proVal = await getSetting('isPro');
-    const firstLaunchAtVal = await getSetting('firstLaunchAt');
-    const vaultNameVal = await getSetting('vaultName');
-    const vaultNamePromptSeenVal = await getSetting('vaultNamePromptSeen');
-    const ocrExtractVal = await getSetting('ocrExtractOnCapture');
-    const ocrReadTrialsUsedVal = await getSetting('ocrReadTrialsUsed');
-    const multiPageLimitDisclaimerDismissedVal = await getSetting('multiPageLimitDisclaimerDismissed');
-    const mlKitMultiPageWarningDismissedVal = await getSetting('mlKitMultiPageWarningDismissed');
-    const googleExtensionsPrivacyTipDismissedVal = await getSetting('googleExtensionsPrivacyTipDismissed');
-    const ocrProcessingModeVal = await getSetting('ocrProcessingMode');
-    const ocrLanguageVal = await getSetting('ocrLanguage');
-    const mlKitScannerModeVal = await getSetting('mlKitScannerMode');
-    const isPro = proVal === 'true';
+    const billingProEntitled = await loadBillingEntitledFromSettings();
+    const settings = await getSettings([
+      SETTING_DEV_PRO_PREVIEW,
+      'firstLaunchAt',
+      'vaultName',
+      'vaultNamePromptSeen',
+      'ocrExtractOnCapture',
+      'ocrReadTrialsUsed',
+      'multiPageLimitDisclaimerDismissed',
+      'mlKitMultiPageWarningDismissed',
+      'autoScanSurfaceTipDismissed',
+      'googleExtensionsPrivacyTipDismissed',
+      'ocrProcessingMode',
+      'ocrLanguage',
+      'mlKitScannerMode',
+      SETTING_PRIVACY_ONBOARDING,
+    ]);
+
+    const devRaw = settings[SETTING_DEV_PRO_PREVIEW];
+    const devProPreview = __DEV__ ? parseDevProPreviewRaw(devRaw) : null;
+    const isPro = computeEffectivePro(billingProEntitled, devProPreview);
+    const firstLaunchAtVal = settings.firstLaunchAt;
+    const vaultNameVal = settings.vaultName;
+    const vaultNamePromptSeenVal = settings.vaultNamePromptSeen;
+    const ocrExtractVal = settings.ocrExtractOnCapture;
+    const ocrReadTrialsUsedVal = settings.ocrReadTrialsUsed;
+    const multiPageLimitDisclaimerDismissedVal = settings.multiPageLimitDisclaimerDismissed;
+    const mlKitMultiPageWarningDismissedVal = settings.mlKitMultiPageWarningDismissed;
+    const autoScanSurfaceTipDismissedVal = settings.autoScanSurfaceTipDismissed;
+    const googleExtensionsPrivacyTipDismissedVal = settings.googleExtensionsPrivacyTipDismissed;
+    const ocrProcessingModeVal = settings.ocrProcessingMode;
+    const ocrLanguageVal = settings.ocrLanguage;
+    const mlKitScannerModeVal = settings.mlKitScannerMode;
+    const privacyOnboardingRaw = settings[SETTING_PRIVACY_ONBOARDING];
+    let privacyOnboardingCompleted = false;
+    if (privacyOnboardingRaw === '1') {
+      privacyOnboardingCompleted = true;
+    } else if (privacyOnboardingRaw == null) {
+      const docCount = await getTotalFileCount();
+      const vaultSeen = vaultNamePromptSeenVal === 'true';
+      if (docCount > 0 || vaultSeen) {
+        await setSetting(SETTING_PRIVACY_ONBOARDING, '1');
+        privacyOnboardingCompleted = true;
+      } else {
+        privacyOnboardingCompleted = false;
+      }
+    } else {
+      privacyOnboardingCompleted = true;
+    }
     const savedVaultName = (vaultNameVal ?? '').trim();
     const vaultName = savedVaultName || 'My Vault';
     const vaultNamePromptSeen = vaultNamePromptSeenVal === 'true';
     const ocrExtractOnCapture = ocrExtractVal === 'true';
     const multiPageLimitDisclaimerDismissed = multiPageLimitDisclaimerDismissedVal === 'true';
     const mlKitMultiPageWarningDismissed = mlKitMultiPageWarningDismissedVal === 'true';
+    const autoScanSurfaceTipDismissed = autoScanSurfaceTipDismissedVal === 'true';
     const googleExtensionsPrivacyTipDismissed = googleExtensionsPrivacyTipDismissedVal === 'true';
     const ocrProcessingMode =
       ocrProcessingModeVal === 'document' ||
@@ -283,6 +393,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await setSetting('vaultName', vaultName);
     }
     set({
+      billingProEntitled,
+      devProPreview,
       isPro,
       firstLaunchAt,
       isIntroEligible,
@@ -291,19 +403,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
       ocrExtractOnCapture,
       multiPageLimitDisclaimerDismissed,
       mlKitMultiPageWarningDismissed,
+      autoScanSurfaceTipDismissed,
       googleExtensionsPrivacyTipDismissed,
+      privacyOnboardingCompleted,
+      settingsHydrated: true,
       ocrProcessingMode,
       ocrLanguage,
       mlKitScannerMode,
       ocrReadTrialsUsed,
     });
 
-    checkProEntitlement().then((entitled) => {
-      if (entitled !== get().isPro) {
-        setSetting('isPro', String(entitled));
-        set({ isPro: entitled });
-      }
-    }).catch(() => {});
+    syncProEntitlementFromRevenueCat()
+      .then(async (result) => {
+        if (result === 'unknown') return;
+        const entitled = result === 'entitled';
+        const s = get();
+        if (entitled) {
+          await clearQuizWhyProData();
+        }
+        if (entitled === s.billingProEntitled) return;
+        await setSetting(SETTING_PRO_BILLING, String(entitled));
+        set({
+          billingProEntitled: entitled,
+          isPro: computeEffectivePro(entitled, s.devProPreview),
+        });
+      })
+      .catch(() => {});
   },
 
   setVaultName: async (name) => {
@@ -318,17 +443,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ vaultNamePromptVisible: false });
   },
 
-  setIsPro: async (value) => {
+  setDevProPreview: async (preview) => {
     if (!__DEV__) return;
-    await setSetting('isPro', String(value));
-    set({ isPro: value });
+    await setSetting(SETTING_DEV_PRO_PREVIEW, preview === null ? '' : preview);
+    const billing = get().billingProEntitled;
+    set({ devProPreview: preview, isPro: computeEffectivePro(billing, preview) });
   },
 
   purchasePro: async () => {
     const result = await rcPurchasePro();
     if (result.success) {
-      await setSetting('isPro', 'true');
-      set({ isPro: true });
+      await setSetting(SETTING_PRO_BILLING, 'true');
+      await clearQuizWhyProData();
+      const s = get();
+      set({
+        billingProEntitled: true,
+        isPro: computeEffectivePro(true, s.devProPreview),
+      });
     }
     return result;
   },
@@ -336,16 +467,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
   restorePro: async () => {
     const result = await rcRestorePurchases();
     if (result.success) {
-      await setSetting('isPro', 'true');
-      set({ isPro: true });
+      await setSetting(SETTING_PRO_BILLING, 'true');
+      await clearQuizWhyProData();
+      const s = get();
+      set({
+        billingProEntitled: true,
+        isPro: computeEffectivePro(true, s.devProPreview),
+      });
     }
     return result;
   },
 
   syncProStatus: async () => {
-    const entitled = await checkProEntitlement();
-    await setSetting('isPro', String(entitled));
-    set({ isPro: entitled });
+    const result = await syncProEntitlementFromRevenueCat();
+    if (result === 'unknown') return;
+    const entitled = result === 'entitled';
+    await setSetting(SETTING_PRO_BILLING, String(entitled));
+    if (entitled) {
+      await clearQuizWhyProData();
+    }
+    const s = get();
+    set({
+      billingProEntitled: entitled,
+      isPro: computeEffectivePro(entitled, s.devProPreview),
+    });
   },
 
   setOcrExtractOnCapture: async (enabled) => {
@@ -356,21 +501,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setPendingOcrText: (draft) => set({ pendingOcrText: draft }),
   clearPendingOcrText: () => set({ pendingOcrText: null }),
 
-  consumeOcrReadTrial: async () => {
-    if (get().isPro) return true;
-    if (_ocrTrialLock) return false;
+  consumeOcrReadTrials: async (count) => {
+    const requested = Math.max(0, Math.floor(count));
+    if (requested <= 0) return 0;
+    if (get().isPro) return requested;
+    if (_ocrTrialLock) return 0;
+
     _ocrTrialLock = true;
     try {
       const usedBefore = get().ocrReadTrialsUsed;
       const remaining = getOcrReadTrialsRemaining(usedBefore, get().firstLaunchAt);
-      if (remaining <= 0) return false;
-      const next = usedBefore + 1;
+      const toConsume = Math.min(requested, Math.max(0, remaining));
+      if (toConsume <= 0) return 0;
+      const next = usedBefore + toConsume;
       await setSetting('ocrReadTrialsUsed', String(next));
       set({ ocrReadTrialsUsed: next });
-      return true;
+      return toConsume;
     } finally {
       _ocrTrialLock = false;
     }
+  },
+
+  consumeOcrReadTrial: async () => {
+    if (get().isPro) return true;
+    const consumed = await get().consumeOcrReadTrials(1);
+    return consumed === 1;
   },
 
   resetOcrReadTrialsForDev: async () => {
@@ -388,6 +543,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setMlKitMultiPageWarningDismissed: async (dismissed) => {
     await setSetting('mlKitMultiPageWarningDismissed', String(dismissed));
     set({ mlKitMultiPageWarningDismissed: dismissed });
+  },
+
+  setAutoScanSurfaceTipDismissed: async (dismissed) => {
+    await setSetting('autoScanSurfaceTipDismissed', String(dismissed));
+    set({ autoScanSurfaceTipDismissed: dismissed });
   },
 
   setGoogleExtensionsPrivacyTipDismissed: async (dismissed) => {
@@ -481,17 +641,39 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return id;
   },
 
+  editTag: async (id, name) => {
+    await updateTag(id, name);
+    await get().loadTags();
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
+    if (get().selectedTagId === id) {
+      await get().loadDocumentsByTag(id);
+    }
+  },
+
   removeTag: async (id) => {
     await deleteTag(id);
+    const { selectedTagId } = get();
+    if (selectedTagId === id) {
+      set({ selectedTagId: null });
+      await get().loadDocuments(null);
+    }
     await get().loadTags();
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
   },
 
   tagDocument: async (documentId, tagId) => {
     await addTagToDocument(documentId, tagId);
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
+  },
+
+  tagDocuments: async (documentIds, tagId) => {
+    await addTagToDocuments(documentIds, tagId);
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
   },
 
   untagDocument: async (documentId, tagId) => {
     await removeTagFromDocument(documentId, tagId);
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
   },
 
   getOrCreateTag: async (name) => {
@@ -547,15 +729,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
             // Quota exhausted: do not persist OCR text.
           } else {
             const needed = Math.min(remaining, estimateOcrPageCount(preOcrText));
-            let allConsumed = true;
-            for (let i = 0; i < needed; i++) {
-              const consumed = await get().consumeOcrReadTrial();
-              if (!consumed) {
-                allConsumed = false;
-                break;
-              }
-            }
-            if (!allConsumed) {
+            const consumed = await get().consumeOcrReadTrials(needed);
+            if (consumed !== needed) {
               // If quota behavior changed mid-loop, avoid persisting OCR without full accounting.
             } else {
               await updateDocumentOcrText(docId, preOcrText);
@@ -638,11 +813,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     void maybeUploadVaultDocumentToGoogleDrive(fileUri, fileType, title, docId);
 
-    await get().loadDocuments();
+    if (!options?.skipReload) {
+      await get().loadDocuments();
+    }
     return docId;
   },
 
-  editDocument: async (id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes) => {
+  editDocument: async (id, title, fileUri, fileType, categoryId, purchasePrice, expiryDate, notes, options) => {
     // Find existing notification_id to cancel the old alert
     const existing = get().documents.find((d) => d.id === id);
     if (existing?.notification_id) {
@@ -673,10 +850,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     void maybeUploadVaultDocumentToGoogleDrive(fileUri, fileType, title, id);
 
-    await get().loadDocuments();
+    if (!options?.skipReload) {
+      await get().loadDocuments();
+    }
   },
 
-  removeDocument: async (id) => {
+  removeDocument: async (id, options) => {
     const existing = get().documents.find((d) => d.id === id);
     if (existing?.notification_id) {
       try {
@@ -686,15 +865,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
     }
     await deleteDocument(id);
-    await get().loadDocuments();
+    if (!options?.skipReload) {
+      await get().loadDocuments();
+    }
   },
 
   duplicateDocument: async (id) => {
-    const doc = get().documents.find((d) => d.id === id);
+    const doc = await getDocumentById(id);
     if (!doc) throw new Error('Document not found');
     const newUri = await copyFileInArchive(doc.file_uri, doc.file_uri.split('.').pop());
     const newTitle = doc.title.trim().startsWith('(Copy)') ? doc.title : `(Copy) ${doc.title}`;
     const copyOcr = doc.ocr_text != null && doc.ocr_text.trim() !== '' ? { copyOcrFromSource: doc.ocr_text } : undefined;
+    const addOptions = copyOcr ? { ...copyOcr, skipReload: true } : { skipReload: true };
     const newId = await get().addDocument(
       newTitle,
       newUri,
@@ -703,12 +885,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       doc.purchase_price ?? null,
       doc.expiry_date ?? null,
       doc.notes ?? null,
-      copyOcr
+      addOptions
     );
     const tags = await getTagsForDocument(id);
-    for (const tag of tags) {
-      await addTagToDocument(newId, tag.id);
-    }
+    await addTagsToDocument(newId, tags.map((tag) => tag.id));
+    set((s) => ({ documentTagLinksVersion: s.documentTagLinksVersion + 1 }));
     await get().loadDocuments();
     return newId;
   },

@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Alert,
   Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,15 +13,21 @@ import { useNavigation, DrawerActions } from '@react-navigation/native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { getTagsForDocuments } from '@/db/tags';
 import { deleteFileFromArchive } from '@/services/StorageService';
-import { shareSelectedDocuments } from '@/services/BackupService';
+import { shareSelectedDocuments, type BackupProgress } from '@/services/BackupService';
+import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
+import {
+  resetBackupProgressThrottle,
+  shouldEmitBackupProgress,
+  type BackupProgressThrottleState,
+} from '@/services/backupProgressThrottle';
 import { DocumentCard } from '@/components/document/DocumentCard';
-import { ConfirmModal, PaywallModal, QuizWhyPro } from '@/components/ui';
+import { BackupProgressModal, ConfirmModal, PaywallModal, QuizWhyPro } from '@/components/ui';
 import { getFreeLimit } from '@/services/limits';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Document, FileType } from '@/db/types';
-import type { Tag } from '@/db/types';
+import type { Document, FileType, Tag } from '@/db/types';
 
 export default function HomeScreen() {
   const navigation = useNavigation();
@@ -35,6 +40,7 @@ export default function HomeScreen() {
     searchQuery,
     searchResultCapped,
     sortBy,
+    documentTagLinksVersion,
     setSortBy,
     selectionMode,
     selectedIds,
@@ -44,12 +50,38 @@ export default function HomeScreen() {
     clearSelection,
     removeDocument,
     editDocument,
-    tagDocument,
+    tagDocuments,
     loadDocuments,
     loadDocumentsByTag,
     showToast,
     isPro,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      documents: s.documents,
+      categories: s.categories,
+      tags: s.tags,
+      selectedCategoryId: s.selectedCategoryId,
+      selectedTagId: s.selectedTagId,
+      searchQuery: s.searchQuery,
+      searchResultCapped: s.searchResultCapped,
+      sortBy: s.sortBy,
+      documentTagLinksVersion: s.documentTagLinksVersion,
+      setSortBy: s.setSortBy,
+      selectionMode: s.selectionMode,
+      selectedIds: s.selectedIds,
+      setSelectionMode: s.setSelectionMode,
+      toggleSelected: s.toggleSelected,
+      selectAll: s.selectAll,
+      clearSelection: s.clearSelection,
+      removeDocument: s.removeDocument,
+      editDocument: s.editDocument,
+      tagDocuments: s.tagDocuments,
+      loadDocuments: s.loadDocuments,
+      loadDocumentsByTag: s.loadDocumentsByTag,
+      showToast: s.showToast,
+      isPro: s.isPro,
+    }))
+  );
   const [documentTagsMap, setDocumentTagsMap] = useState<Record<number, Tag[]>>({});
   const [bulkDeleteVisible, setBulkDeleteVisible] = useState(false);
   const [bulkMoveVisible, setBulkMoveVisible] = useState(false);
@@ -57,15 +89,36 @@ export default function HomeScreen() {
   const [fileTypeFilter, setFileTypeFilter] = useState<FileType | 'all'>('all');
   const [paywallVisible, setPaywallVisible] = useState(false);
   const [showWhyPro, setShowWhyPro] = useState(false);
+  const [shareZipLoading, setShareZipLoading] = useState(false);
+  const [shareZipProgress, setShareZipProgress] = useState<BackupProgress | null>(null);
+  const [shareZipStartedAt, setShareZipStartedAt] = useState<number | null>(null);
+  const [shareZipEstimatedSeconds, setShareZipEstimatedSeconds] = useState<number | null>(null);
+  const shareZipProgressThrottleRef = useRef<BackupProgressThrottleState>({ lastPhase: '', lastAt: 0 });
+
+  /** Stable key: sorted visible doc IDs — avoids refetching tags when only sort order changes. */
+  const visibleDocIdsSignature = useMemo(() => {
+    const filtered =
+      fileTypeFilter === 'all' ? documents : documents.filter((d) => d.file_type === fileTypeFilter);
+    if (filtered.length === 0) return '';
+    return filtered
+      .map((d) => d.id)
+      .sort((a, b) => a - b)
+      .join(',');
+  }, [documents, fileTypeFilter]);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const filteredDocs =
-        fileTypeFilter === 'all' ? documents : documents.filter((d) => d.file_type === fileTypeFilter);
-      const ids = filteredDocs.map((d) => d.id);
+      if (!visibleDocIdsSignature) {
+        if (!cancelled) setDocumentTagsMap({});
+        return;
+      }
 
+      const ids = visibleDocIdsSignature
+        .split(',')
+        .map((s) => parseInt(s, 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
       if (ids.length === 0) {
         if (!cancelled) setDocumentTagsMap({});
         return;
@@ -78,15 +131,23 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [documents, fileTypeFilter]);
+  }, [visibleDocIdsSignature, documentTagLinksVersion]);
 
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
   const selectedTag = tags.find((t) => t.id === selectedTagId);
 
-  const displayedDocuments =
-    fileTypeFilter === 'all'
-      ? documents
-      : documents.filter((d) => d.file_type === fileTypeFilter);
+  const displayedDocuments = useMemo(
+    () => (fileTypeFilter === 'all' ? documents : documents.filter((d) => d.file_type === fileTypeFilter)),
+    [documents, fileTypeFilter]
+  );
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const categoriesById = useMemo(() => {
+    const map = new Map<number, (typeof categories)[number]>();
+    for (const category of categories) {
+      map.set(category.id, category);
+    }
+    return map;
+  }, [categories]);
 
   const headerTitle = searchQuery
     ? `Results for "${searchQuery}"`
@@ -100,17 +161,20 @@ export default function HomeScreen() {
     navigation.dispatch(DrawerActions.openDrawer());
   };
 
-  const handleCardLongPress = (id: number) => {
-    if (!isPro) {
-      setPaywallVisible(true);
-      return;
-    }
-    if (!selectionMode) {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      setSelectionMode(true);
-      toggleSelected(id);
-    }
-  };
+  const handleCardLongPress = useCallback(
+    (id: number) => {
+      if (!isPro) {
+        setPaywallVisible(true);
+        return;
+      }
+      if (!selectionMode) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        setSelectionMode(true);
+        toggleSelected(id);
+      }
+    },
+    [isPro, selectionMode, setSelectionMode, toggleSelected]
+  );
 
   const handleClearSelection = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -122,13 +186,16 @@ export default function HomeScreen() {
     selectAll();
   };
 
-  const selectedDocuments = documents.filter((d) => selectedIds.includes(d.id));
+  const selectedDocuments = useMemo(
+    () => documents.filter((d) => selectedIdSet.has(d.id)),
+    [documents, selectedIdSet]
+  );
 
   const handleBulkDelete = async () => {
     setBulkDeleteVisible(false);
     for (const doc of selectedDocuments) {
       await deleteFileFromArchive(doc.file_uri);
-      await removeDocument(doc.id);
+      await removeDocument(doc.id, { skipReload: true });
     }
     clearSelection();
     if (selectedTagId) await loadDocumentsByTag(selectedTagId);
@@ -147,7 +214,8 @@ export default function HomeScreen() {
         categoryId,
         doc.purchase_price ?? null,
         doc.expiry_date ?? null,
-        doc.notes ?? null
+        doc.notes ?? null,
+        { skipReload: true }
       );
     }
     clearSelection();
@@ -161,33 +229,69 @@ export default function HomeScreen() {
       return;
     }
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await shareSelectedDocuments(selectedDocuments, categories);
-    showToast('Zip ready to share', 'success');
+    resetBackupProgressThrottle(shareZipProgressThrottleRef.current);
+    setShareZipLoading(true);
+    setShareZipProgress({ phase: 'preflight' });
+    setShareZipStartedAt(Date.now());
+    setShareZipEstimatedSeconds(null);
+    try {
+      await shareSelectedDocuments(selectedDocuments, categories, (p) => {
+        if (shouldEmitBackupProgress(shareZipProgressThrottleRef.current, p, 120)) {
+          setShareZipProgress(p);
+          if (p.phase === 'preflight' && typeof p.totalBytes === 'number') {
+            setShareZipEstimatedSeconds(estimateBackupTotalSeconds(p.totalBytes, p.fileCount ?? 0));
+          }
+        }
+      });
+      showToast('Zip ready to share', 'success');
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Could not create zip.';
+      showToast(message, 'danger');
+    } finally {
+      setShareZipLoading(false);
+      setShareZipProgress(null);
+      setShareZipStartedAt(null);
+      setShareZipEstimatedSeconds(null);
+    }
   };
 
   const handleBulkTag = async (tagId: number) => {
     setBulkTagVisible(false);
-    for (const doc of selectedDocuments) {
-      await tagDocument(doc.id, tagId);
-    }
+    if (selectedDocuments.length === 0) return;
+    await tagDocuments(
+      selectedDocuments.map((d) => d.id),
+      tagId
+    );
     clearSelection();
     if (selectedTagId) await loadDocumentsByTag(selectedTagId);
     else await loadDocuments(selectedCategoryId);
   };
 
-  const renderDocument = ({ item }: { item: Document }) => (
-    <DocumentCard
-      document={item}
-      tags={documentTagsMap[item.id] ?? []}
-      selectionMode={selectionMode}
-      isSelected={selectedIds.includes(item.id)}
-      onLongPress={() => handleCardLongPress(item.id)}
-      onPressInSelectionMode={() => toggleSelected(item.id)}
-    />
+  const renderDocument = useCallback(
+    ({ item }: { item: Document }) => (
+      <DocumentCard
+        document={item}
+        category={item.category_id != null ? categoriesById.get(item.category_id) ?? null : null}
+        tags={documentTagsMap[item.id] ?? []}
+        selectionMode={selectionMode}
+        isSelected={selectedIdSet.has(item.id)}
+        onLongPress={() => handleCardLongPress(item.id)}
+        onPressInSelectionMode={() => toggleSelected(item.id)}
+      />
+    ),
+    [categoriesById, documentTagsMap, handleCardLongPress, selectionMode, selectedIdSet, toggleSelected]
   );
+  const renderSeparator = useCallback(() => <View style={styles.separator} />, []);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
+      <BackupProgressModal
+        visible={shareZipLoading}
+        title="Preparing zip"
+        progress={shareZipProgress}
+        startedAtMs={shareZipStartedAt}
+        estimatedTotalSeconds={shareZipEstimatedSeconds}
+      />
       {selectionMode ? (
         <View style={styles.selectionToolbar}>
           <TouchableOpacity onPress={handleClearSelection} style={styles.toolbarBtn} activeOpacity={0.7}>
@@ -320,7 +424,7 @@ export default function HomeScreen() {
       />
 
       <Modal
-        visible={showWhyPro}
+        visible={showWhyPro && !isPro}
         transparent
         animationType="slide"
         onRequestClose={() => setShowWhyPro(false)}
@@ -413,7 +517,7 @@ export default function HomeScreen() {
         keyExtractor={(item) => String(item.id)}
         renderItem={renderDocument}
         contentContainerStyle={styles.list}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        ItemSeparatorComponent={renderSeparator}
         ListEmptyComponent={<EmptyState searchQuery={searchQuery} fileTypeFilter={fileTypeFilter} />}
       />
     </SafeAreaView>
@@ -429,7 +533,7 @@ function EmptyState({ searchQuery, fileTypeFilter }: { searchQuery: string; file
         </View>
         <Text style={styles.emptyTitle}>No results found</Text>
         <Text style={styles.emptySubtitle}>
-          No documents matched "{searchQuery}". Try a different search term.
+          No documents matched &quot;{searchQuery}&quot;. Try a different search term.
         </Text>
       </View>
     );
@@ -443,7 +547,7 @@ function EmptyState({ searchQuery, fileTypeFilter }: { searchQuery: string; file
         </View>
         <Text style={styles.emptyTitle}>No documents in this filter</Text>
         <Text style={styles.emptySubtitle}>
-          Try switching the file type filter back to "All" or add a new document.
+          Try switching the file type filter back to &quot;All&quot; or add a new document.
         </Text>
         <TouchableOpacity
           style={styles.emptyButton}

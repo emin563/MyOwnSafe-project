@@ -1,5 +1,4 @@
 import Purchases, {
-  LOG_LEVEL,
   PURCHASES_ERROR_CODE,
   type CustomerInfo,
   type PurchasesPackage,
@@ -8,12 +7,18 @@ import { REVENUECAT_API_KEY, REVENUECAT_ENTITLEMENT_ID } from '@/config/revenueC
 
 let configured = false;
 
+function isRevenueCatApiKeyPlaceholder(): boolean {
+  return !REVENUECAT_API_KEY || REVENUECAT_API_KEY === 'YOUR_REVENUECAT_GOOG_API_KEY';
+}
+
+export function isRevenueCatConfigured(): boolean {
+  return configured;
+}
+
 export function configureRevenueCat(): void {
-  if (configured || !REVENUECAT_API_KEY || REVENUECAT_API_KEY === 'YOUR_REVENUECAT_GOOG_API_KEY') {
+  if (configured) return;
+  if (isRevenueCatApiKeyPlaceholder()) {
     return;
-  }
-  if (__DEV__) {
-    Purchases.setLogLevel(LOG_LEVEL.DEBUG);
   }
   Purchases.configure({ apiKey: REVENUECAT_API_KEY });
   configured = true;
@@ -23,14 +28,31 @@ function hasProEntitlement(info: CustomerInfo): boolean {
   return typeof info.entitlements.active[REVENUECAT_ENTITLEMENT_ID] !== 'undefined';
 }
 
-export async function checkProEntitlement(): Promise<boolean> {
-  if (!configured) return false;
+/**
+ * Result of asking RevenueCat for current entitlement.
+ * - `unknown`: SDK call failed (network, outage, etc.) — keep last persisted purchase state; do not revoke Pro.
+ * - `not_entitled`: Got `CustomerInfo` and the pro entitlement is inactive (incl. refund/expiry when RC reflects it).
+ */
+export type ProEntitlementSyncResult = 'entitled' | 'not_entitled' | 'unknown';
+
+export async function syncProEntitlementFromRevenueCat(): Promise<ProEntitlementSyncResult> {
+  if (!configured) return 'not_entitled';
   try {
     const info = await Purchases.getCustomerInfo();
-    return hasProEntitlement(info);
+    return hasProEntitlement(info) ? 'entitled' : 'not_entitled';
   } catch {
-    return false;
+    return 'unknown';
   }
+}
+
+/**
+ * Legacy boolean API (still referenced by some bundles/tests). True only when sync returns `entitled`;
+ * `false` for `not_entitled` or `unknown`. Prefer `syncProEntitlementFromRevenueCat` in the store so
+ * `unknown` does not revoke persisted Pro.
+ */
+export async function checkProEntitlement(): Promise<boolean> {
+  const r = await syncProEntitlementFromRevenueCat();
+  return r === 'entitled';
 }
 
 export async function getProPackage(): Promise<PurchasesPackage | null> {
@@ -48,9 +70,25 @@ export type PurchaseResult =
   | { success: false; cancelled: boolean; message: string };
 
 export async function purchasePro(): Promise<PurchaseResult> {
+  if (!configured) {
+    return {
+      success: false,
+      cancelled: false,
+      message: isRevenueCatApiKeyPlaceholder()
+        ? __DEV__
+          ? 'RevenueCat API key is missing or still the placeholder in app config — set a real key in app.json / EAS and rebuild.'
+          : 'Purchases are not available in this app version. Please update the app or contact support.'
+        : 'Purchases are not available. Please try again later.',
+    };
+  }
   const pkg = await getProPackage();
   if (!pkg) {
-    return { success: false, cancelled: false, message: 'No product available. Please try again later.' };
+    return {
+      success: false,
+      cancelled: false,
+      message:
+        'No product available from the store. Check RevenueCat offerings, Play product IDs, and that you are on a build with Play Billing.',
+    };
   }
   try {
     const { customerInfo } = await Purchases.purchasePackage(pkg);

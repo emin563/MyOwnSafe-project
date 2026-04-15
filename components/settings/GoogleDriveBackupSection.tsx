@@ -47,8 +47,8 @@ function GoogleDriveProTeaser({ onRequestPro }: { onRequestPro: () => void }) {
       <View style={styles.rowContent}>
         <Text style={styles.rowLabel}>Google Drive backup (Pro)</Text>
         <Text style={styles.rowHint}>
-          Pro: link your Google account and auto-upload saved documents and backup zips to a Vault folder (Android).
-          One-time purchase unlocks this with full backup, bulk tools, and more.
+          Pro: link your Google account and auto-upload saved documents to a Vault folder (Android). Full vault
+          backups stay local (.zip export). One-time purchase unlocks this with full backup, bulk tools, and more.
         </Text>
       </View>
       <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />

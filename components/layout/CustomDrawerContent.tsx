@@ -1,26 +1,22 @@
-import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  FlatList,
-} from 'react-native';
-import { DrawerContentComponentProps } from '@react-navigation/drawer';
-import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAppStore } from '@/store/app-store';
-import { SearchInput, IconButton, InputModal, ConfirmModal, LimitReachedDialog } from '@/components/ui';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { ConfirmModal, IconButton, InputModal, LimitReachedDialog, SearchInput } from '@/components/ui';
 import type { Category } from '@/db/types';
 import { isLimitError } from '@/services/LimitError';
+import { useAppStore } from '@/store/app-store';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { DrawerContentComponentProps } from '@react-navigation/drawer';
+import { router } from 'expo-router';
+import React, { useCallback, useMemo, useState } from 'react';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useShallow } from 'zustand/react/shallow';
 
 // Limits enforced in the store; UI just shows the same Limit dialog.
 
 const CATEGORY_ICONS = [
   'folder-outline',
   'receipt-outline',
+  'ribbon-outline',
   'shield-checkmark-outline',
   'card-outline',
   'document-text-outline',
@@ -42,7 +38,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
     setSelectedCategoryId,
     setSelectedTagId,
     loadDocuments,
-    loadDocumentsByTag,
     addCategory,
     editCategory,
     removeCategory,
@@ -51,7 +46,25 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
     runSearch,
     vaultName,
     setVaultName,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      categories: s.categories,
+      tags: s.tags,
+      selectedCategoryId: s.selectedCategoryId,
+      selectedTagId: s.selectedTagId,
+      setSelectedCategoryId: s.setSelectedCategoryId,
+      setSelectedTagId: s.setSelectedTagId,
+      loadDocuments: s.loadDocuments,
+      addCategory: s.addCategory,
+      editCategory: s.editCategory,
+      removeCategory: s.removeCategory,
+      searchQuery: s.searchQuery,
+      setSearchQuery: s.setSearchQuery,
+      runSearch: s.runSearch,
+      vaultName: s.vaultName,
+      setVaultName: s.setVaultName,
+    }))
+  );
 
   const [addModalVisible, setAddModalVisible] = useState(false);
   const [editModal, setEditModal] = useState<{ visible: boolean; category: Category | null }>({
@@ -63,7 +76,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
     category: null,
   });
   const [limitVisible, setLimitVisible] = useState(false);
-  const [limitKind, setLimitKind] = useState<'categories'>('categories');
   const [pendingCategoryName, setPendingCategoryName] = useState<string | null>(null);
   const [vaultNameModalVisible, setVaultNameModalVisible] = useState(false);
   const categoriesListRef = React.useRef<FlatList<Category> | null>(null);
@@ -73,13 +85,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
   const handleSelectCategory = (id: number | null) => {
     setSelectedCategoryId(id);
     loadDocuments(id);
-    router.replace('/(drawer)');
-    props.navigation.closeDrawer();
-  };
-
-  const handleSelectTag = (tagId: number) => {
-    setSelectedTagId(tagId);
-    loadDocumentsByTag(tagId);
     router.replace('/(drawer)');
     props.navigation.closeDrawer();
   };
@@ -113,7 +118,7 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
         runSearch(latest);
       }
     };
-  }, []);
+  }, [runSearch]);
 
   const handleAddCategory = async (name: string) => {
     try {
@@ -124,7 +129,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
         // Close the input modal so "Manage / Delete" doesn't return to a create flow.
         setAddModalVisible(false);
         setPendingCategoryName(name);
-        setLimitKind('categories');
         setLimitVisible(true);
         return;
       }
@@ -184,6 +188,22 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
       </TouchableOpacity>
     );
   };
+
+  const selectedTagName = useMemo(
+    () => (selectedTagId != null ? tags.find((t) => t.id === selectedTagId)?.name ?? null : null),
+    [tags, selectedTagId]
+  );
+
+  const tagsNavSubtitle = useMemo(() => {
+    if (selectedTagName) return `Filtering: ${selectedTagName}`;
+    if (tags.length === 0) return 'Create and manage tags';
+    return `${tags.length} tag${tags.length === 1 ? '' : 's'} · tap to filter`;
+  }, [selectedTagName, tags.length]);
+
+  const openTagsScreen = useCallback(() => {
+    router.push('/tags');
+    props.navigation.closeDrawer();
+  }, [props.navigation]);
 
   return (
     <SafeAreaView
@@ -316,38 +336,22 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
         />
 
         <View style={styles.divider} />
-        <Text style={styles.sectionLabel}>Tags</Text>
-        {tags.length === 0 ? (
-          <View style={styles.tagsEmptyWrap}>
-            <Text style={styles.tagsEmptyText}>No tags yet</Text>
-            <Text style={styles.tagsEmptySubtext}>
-              Add tags from any document to make search and organization faster.
+        <TouchableOpacity
+          style={styles.tagsNavRow}
+          onPress={openTagsScreen}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Open tags"
+        >
+          <Ionicons name="pricetag-outline" size={18} color={Colors.textSecondary} />
+          <View style={styles.tagsNavTextWrap}>
+            <Text style={styles.tagsNavTitle}>Tags</Text>
+            <Text style={styles.tagsNavSubtitle} numberOfLines={1}>
+              {tagsNavSubtitle}
             </Text>
           </View>
-        ) : (
-          tags.map((tag) => (
-              <TouchableOpacity
-                key={tag.id}
-                style={[styles.categoryRow, selectedTagId === tag.id && styles.categoryRowActive]}
-                onPress={() => handleSelectTag(tag.id)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.categoryLeft}>
-                  <Ionicons
-                    name="pricetag-outline"
-                    size={16}
-                    color={selectedTagId === tag.id ? Colors.primary : Colors.textMuted}
-                  />
-                  <Text
-                    style={[styles.categoryLabel, selectedTagId === tag.id && styles.categoryLabelActive]}
-                    numberOfLines={1}
-                  >
-                    {tag.name}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))
-        )}
+          <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+        </TouchableOpacity>
       </View>
 
       <View
@@ -412,7 +416,7 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
       />
       <LimitReachedDialog
         visible={limitVisible}
-        kind={limitKind}
+        kind="categories"
         onClose={() => setLimitVisible(false)}
         onUpgrade={async () => {
           if (!pendingCategoryName) return;
@@ -421,8 +425,6 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
           await handleAddCategory(retryName);
         }}
         onManage={() => {
-          // Bring the Categories section into view (top of the drawer)
-          setSelectedTagId(null);
           setSearchQuery('');
           categoriesListRef.current?.scrollToOffset({ offset: 0, animated: true });
         }}
@@ -527,6 +529,31 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: Spacing.sm,
   },
+  tagsNavRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    marginHorizontal: Spacing.sm,
+    marginBottom: Spacing.xs,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  tagsNavTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  tagsNavTitle: {
+    color: Colors.text,
+    fontSize: Typography.fontSizeBase,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  tagsNavSubtitle: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeSm,
+    marginTop: 2,
+  },
   categoryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -544,34 +571,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
     flex: 1,
-  },
-  sectionLabel: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeSm,
-    fontWeight: Typography.fontWeightSemibold,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.xs,
-    marginHorizontal: Spacing.base,
-  },
-  tagsEmptyText: {
-    color: Colors.text,
-    fontSize: Typography.fontSizeSm,
-    fontWeight: Typography.fontWeightSemibold,
-    marginBottom: 2,
-  },
-  tagsEmptyWrap: {
-    marginHorizontal: Spacing.base,
-    marginBottom: Spacing.sm,
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.sm,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    backgroundColor: Colors.surfaceRaised,
-  },
-  tagsEmptySubtext: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeSm,
   },
   categoryLabel: {
     color: Colors.textSecondary,

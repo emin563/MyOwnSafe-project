@@ -1,7 +1,13 @@
 import { GoogleDriveBackupSection } from '@/components/settings/GoogleDriveBackupSection';
-import { PaywallModal, ProIncludedFeatureDialog, QuizWhyPro } from '@/components/ui';
+import { BackupProgressModal, PaywallModal, ProIncludedFeatureDialog, QuizWhyPro } from '@/components/ui';
 import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
-import { createBackup, restoreFromBackup } from '@/services/BackupService';
+import { createBackup, restoreFromBackup, type BackupProgress } from '@/services/BackupService';
+import {
+  resetBackupProgressThrottle,
+  shouldEmitBackupProgress,
+  type BackupProgressThrottleState,
+} from '@/services/backupProgressThrottle';
+import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
 import { cancelAllNotifications } from '@/services/NotificationService';
 import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
 import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
@@ -25,6 +31,7 @@ import {
 import { GOOGLE_PRIVACY_MODAL_BODY, GOOGLE_PRIVACY_MODAL_TITLE } from '@/constants/googleServicesPrivacy';
 import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { withExternalActivityGuard } from '@/store/auth-flags';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +43,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    BackHandler,
     Modal,
     Platform,
     Share,
@@ -61,15 +69,34 @@ export default function SettingsScreen() {
     loadDocuments,
     loadCategories,
     loadSettings,
-    setIsPro,
+    setDevProPreview,
     isPro,
+    billingProEntitled,
+    devProPreview,
     setGoogleExtensionsPrivacyTipDismissed,
     resetOcrReadTrialsForDev,
     mlKitScannerMode,
     setMlKitScannerMode,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      loadDocuments: s.loadDocuments,
+      loadCategories: s.loadCategories,
+      loadSettings: s.loadSettings,
+      setDevProPreview: s.setDevProPreview,
+      isPro: s.isPro,
+      billingProEntitled: s.billingProEntitled,
+      devProPreview: s.devProPreview,
+      setGoogleExtensionsPrivacyTipDismissed: s.setGoogleExtensionsPrivacyTipDismissed,
+      resetOcrReadTrialsForDev: s.resetOcrReadTrialsForDev,
+      mlKitScannerMode: s.mlKitScannerMode,
+      setMlKitScannerMode: s.setMlKitScannerMode,
+    }))
+  );
 
   const [backupLoading, setBackupLoading] = useState(false);
+  const [backupProgress, setBackupProgress] = useState<BackupProgress | null>(null);
+  const [backupStartedAt, setBackupStartedAt] = useState<number | null>(null);
+  const [backupEstimatedSeconds, setBackupEstimatedSeconds] = useState<number | null>(null);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [dataPortabilityProDialogVisible, setDataPortabilityProDialogVisible] = useState(false);
   const [pendingDataPortabilityAction, setPendingDataPortabilityAction] = useState<
@@ -93,6 +120,15 @@ export default function SettingsScreen() {
   const [googlePrivacyModalVisible, setGooglePrivacyModalVisible] = useState(false);
   const [googlePrivacyDontShowAgain, setGooglePrivacyDontShowAgain] = useState(false);
   const googlePrivacyTipShownThisSessionRef = useRef(false);
+  const backupProgressThrottleRef = useRef<BackupProgressThrottleState>({ lastPhase: '', lastAt: 0 });
+
+  const leaveSettings = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(drawer)');
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -111,6 +147,16 @@ export default function SettingsScreen() {
         cancelled = true;
       };
     }, [loadSettings])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        leaveSettings();
+        return true;
+      });
+      return () => sub.remove();
+    }, [leaveSettings])
   );
 
   useEffect(() => {
@@ -138,15 +184,29 @@ export default function SettingsScreen() {
       setDataPortabilityProDialogVisible(true);
       return;
     }
+    resetBackupProgressThrottle(backupProgressThrottleRef.current);
     setBackupLoading(true);
+    setBackupProgress({ phase: 'preflight' });
+    setBackupStartedAt(Date.now());
+    setBackupEstimatedSeconds(null);
     try {
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      await createBackup();
+      await createBackup((p) => {
+        if (shouldEmitBackupProgress(backupProgressThrottleRef.current, p, 120)) {
+          setBackupProgress(p);
+          if (p.phase === 'preflight' && typeof p.totalBytes === 'number') {
+            setBackupEstimatedSeconds(estimateBackupTotalSeconds(p.totalBytes, p.fileCount ?? 0));
+          }
+        }
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An unknown error occurred.';
       Alert.alert('Backup Failed', message);
     } finally {
       setBackupLoading(false);
+      setBackupProgress(null);
+      setBackupStartedAt(null);
+      setBackupEstimatedSeconds(null);
     }
   };
 
@@ -347,8 +407,15 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+      <BackupProgressModal
+        visible={backupLoading}
+        title="Creating backup"
+        progress={backupProgress}
+        startedAtMs={backupStartedAt}
+        estimatedTotalSeconds={backupEstimatedSeconds}
+      />
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} activeOpacity={0.7}>
+        <TouchableOpacity onPress={leaveSettings} style={styles.backBtn} activeOpacity={0.7}>
           <Ionicons name="chevron-back" size={24} color={Colors.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Settings</Text>
@@ -392,6 +459,23 @@ export default function SettingsScreen() {
               <Text style={styles.rowLabel}>App Locking</Text>
               <Text style={styles.rowHint}>
                 Secure Vault using your device&apos;s built-in App Lock, Secure Folder, or Private Space feature.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.divider} />
+          <TouchableOpacity
+            style={[styles.row, styles.rowBtn]}
+            onPress={() => router.push('/permissions-info')}
+            activeOpacity={0.7}
+          >
+            <View style={styles.rowIcon}>
+              <Ionicons name="key-outline" size={20} color={Colors.primary} />
+            </View>
+            <View style={styles.rowContent}>
+              <Text style={styles.rowLabel}>Permissions</Text>
+              <Text style={styles.rowHint}>
+                Camera, files, optional reminders, and Google Play when you purchase Pro
               </Text>
             </View>
             <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
@@ -616,25 +700,54 @@ export default function SettingsScreen() {
               <>
                 <Text style={styles.sectionTitle}>Developer tools</Text>
                 <View style={styles.card}>
-              <View style={styles.row}>
-                <View style={styles.rowIcon}>
-                  <Ionicons name="code-slash-outline" size={20} color={Colors.primary} />
+              {__DEV__ && (
+                <View style={[styles.row, styles.devProSimRow]}>
+                  <View style={styles.rowIcon}>
+                    <Ionicons name="code-slash-outline" size={20} color={Colors.primary} />
+                  </View>
+                  <View style={styles.rowContent}>
+                    <Text style={styles.rowLabel}>Pro simulation</Text>
+                    <Text style={styles.rowHint}>
+                      Store follows Google Play; Free/Pro overrides limits without changing billing sync.
+                    </Text>
+                    <View style={styles.devProChipsRow}>
+                      {(
+                        [
+                          { mode: 'store' as const, label: 'Store', preview: null },
+                          { mode: 'free' as const, label: 'Free', preview: 'force_free' as const },
+                          { mode: 'pro' as const, label: 'Pro', preview: 'force_pro' as const },
+                        ] as const
+                      ).map(({ mode, label, preview }) => {
+                        const selected =
+                          preview === null
+                            ? devProPreview === null
+                            : devProPreview === preview;
+                        return (
+                          <TouchableOpacity
+                            key={mode}
+                            style={[styles.devProChip, selected && styles.devProChipSelected]}
+                            onPress={async () => {
+                              await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              await setDevProPreview(preview);
+                            }}
+                            activeOpacity={0.75}
+                          >
+                            <Text
+                              style={[styles.devProChipText, selected && styles.devProChipTextSelected]}
+                            >
+                              {label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                    <Text style={styles.rowHint}>
+                      Play entitlement: {billingProEntitled ? 'Pro' : 'Free'} · UI limits:{' '}
+                      {isPro ? 'Pro' : 'Free'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.rowContent}>
-                  <Text style={styles.rowLabel}>Developer: Pro mode</Text>
-                  <Text style={styles.rowHint}>Enable/disable Pro for testing</Text>
-                </View>
-                <Switch
-                  value={isPro}
-                  onValueChange={async (value) => {
-                    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    await setIsPro(value);
-                  }}
-                  trackColor={{ false: Colors.border, true: Colors.primary }}
-                  thumbColor={Colors.white}
-                  ios_backgroundColor={Colors.border}
-                />
-              </View>
+              )}
               <TouchableOpacity
                 style={[styles.row, styles.rowBtn]}
                 onPress={async () => {
@@ -1010,65 +1123,67 @@ export default function SettingsScreen() {
           </>
         )}
 
-        {/* About: Why Pro (quiz) + MyOwnSafe Pro (paywall) */}
-        <Text style={styles.sectionTitle}>About</Text>
-        <View style={styles.card}>
-          <TouchableOpacity
-            style={[styles.row, styles.rowBtn]}
-            onPress={() => setPremiumExpanded((e) => !e)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.rowIcon}>
-              <Ionicons name="help-circle-outline" size={20} color={Colors.primary} />
-            </View>
-            <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>Why should I buy Pro</Text>
-              <Text style={styles.rowHint}>
-                {premiumExpanded ? 'Tap to collapse' : 'Answer a few questions'}
-              </Text>
-            </View>
-            <Ionicons
-              name={premiumExpanded ? 'chevron-up' : 'chevron-down'}
-              size={20}
-              color={Colors.textMuted}
-            />
-          </TouchableOpacity>
-          {premiumExpanded && (
-            <>
+        {/* About: quiz + paywall — only for users who have not purchased Pro */}
+        {!isPro && (
+          <>
+            <Text style={styles.sectionTitle}>About</Text>
+            <View style={styles.card}>
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={() => setPremiumExpanded((e) => !e)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="help-circle-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>Is Pro right for you?</Text>
+                  <Text style={styles.rowHint}>
+                    {premiumExpanded ? 'Tap to collapse' : 'Quick fit check (3 questions)'}
+                  </Text>
+                </View>
+                <Ionicons
+                  name={premiumExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color={Colors.textMuted}
+                />
+              </TouchableOpacity>
+              {premiumExpanded && (
+                <>
+                  <View style={styles.divider} />
+                  <View style={styles.premiumContent}>
+                    <Text style={styles.premiumTitle}>{"Let's find your fit"}</Text>
+                    <Text style={styles.premiumText}>
+                      Three short questions on subscriptions, privacy, and how you use AI—then a
+                      personalized summary. No pressure; upgrade anytime from Settings.
+                    </Text>
+                  </View>
+                  <QuizWhyPro
+                    onUpgrade={() => setPaywallVisible(true)}
+                    onClose={() => setPremiumExpanded(false)}
+                  />
+                </>
+              )}
               <View style={styles.divider} />
-              <View style={styles.premiumContent}>
-                <Text style={styles.premiumTitle}>Why go Pro?</Text>
-                <Text style={styles.premiumText}>
-                  Answer a few quick questions to see if unlimited, offline, one-time Pro fits how you
-                  use your vault.
-                </Text>
-              </View>
-              <QuizWhyPro
-                onUpgrade={() => setPaywallVisible(true)}
-                onClose={() => setPremiumExpanded(false)}
-              />
-            </>
-          )}
-          <View style={styles.divider} />
-          <TouchableOpacity
-            style={[styles.row, styles.rowBtn]}
-            onPress={() => setPaywallVisible(true)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.rowIcon}>
-              <Ionicons name="shield-checkmark-outline" size={20} color={Colors.primary} />
+              <TouchableOpacity
+                style={[styles.row, styles.rowBtn]}
+                onPress={() => setPaywallVisible(true)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.rowIcon}>
+                  <Ionicons name="shield-checkmark-outline" size={20} color={Colors.primary} />
+                </View>
+                <View style={styles.rowContent}>
+                  <Text style={styles.rowLabel}>MyOwnSafe Pro</Text>
+                  <Text style={styles.rowHint}>
+                    See full Free limits above, then unlock one-time for unlimited + backup + bulk tools
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
             </View>
-            <View style={styles.rowContent}>
-              <Text style={styles.rowLabel}>MyOwnSafe Pro</Text>
-              <Text style={styles.rowHint}>
-                {isPro
-                  ? 'Pro is active · Unlimited files, categories, tags, and photo text reads'
-                  : 'See full Free limits above, then unlock one-time for unlimited + backup + bulk tools'}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
-          </TouchableOpacity>
-        </View>
+          </>
+        )}
       </ScrollView>
       <PaywallModal
         visible={paywallVisible}
@@ -1245,6 +1360,35 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     fontSize: Typography.fontSizeXs,
     lineHeight: 16,
+  },
+  devProSimRow: {
+    alignItems: 'flex-start',
+  },
+  devProChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  devProChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+  },
+  devProChipSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  devProChipText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightMedium,
+  },
+  devProChipTextSelected: {
+    color: Colors.primary,
   },
   divider: {
     height: 1,

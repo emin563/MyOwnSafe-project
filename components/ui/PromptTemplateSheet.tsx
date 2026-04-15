@@ -11,10 +11,10 @@ import {
   renderPrompt,
   PROMPT_CATEGORIES,
   isFreePromptTemplate,
-  type PromptTemplate,
   type PromptTemplate as PromptTemplateAsset,
 } from '@/services/PromptTemplates';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { SearchInput } from './SearchInput';
 import { PaywallModal } from './PaywallModal';
 
@@ -32,7 +32,12 @@ type Props = {
 };
 
 export function PromptTemplateSheet({ visible, onClose, onContinueToAi, document, fileUri }: Props) {
-  const { showToast, isPro } = useAppStore();
+  const { showToast, isPro } = useAppStore(
+    useShallow((s) => ({
+      showToast: s.showToast,
+      isPro: s.isPro,
+    }))
+  );
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<'All' | (typeof PROMPT_CATEGORIES)[number]>('All');
   const [paywallVisible, setPaywallVisible] = useState(false);

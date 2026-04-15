@@ -1,47 +1,51 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Platform,
-  StatusBar,
-  Alert,
-  ActivityIndicator,
-  ScrollView,
-  Modal,
-  Linking,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
-import * as Haptics from 'expo-haptics';
-import { Ionicons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
-import { saveFileToArchive } from '@/services/StorageService';
-import { getTotalFileCount } from '@/db/documents';
-import { useAppStore } from '@/store/app-store';
-import { authFlags } from '@/store/auth-flags';
-import type { FileType } from '@/db/types';
 import { LimitReachedDialog, PaywallModal, ProIncludedFeatureDialog } from '@/components/ui';
+import { getTotalFileCount } from '@/db/documents';
+import type { FileType } from '@/db/types';
 import { createPdfFromImages } from '@/services/PdfService';
-import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { saveFileToArchive } from '@/services/StorageService';
 import { getFreeLimit, getOcrReadTrialsRemaining } from '@/services/limits';
 import {
-  OCR_LANGUAGE_CATEGORIES,
-  getOcrLanguageLabel,
-  type OcrLanguageCode,
-} from '@/services/ocrLanguages';
-import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
-import { recordPerformanceMetric } from '@/services/performanceMetrics';
-import { recordOcrPageMetric } from '@/services/ocrMetrics';
-import {
-  isAndroidMlKitScannerPlatform,
-  launchVaultMlKitScan,
+    isAndroidMlKitScannerPlatform,
+    launchVaultMlKitScan,
 } from '@/services/mlKitDocumentScan';
+import { extractTextFromImageIfAvailable } from '@/services/ocrExtract';
+import {
+    OCR_LANGUAGE_CATEGORIES,
+    getOcrLanguageLabel
+} from '@/services/ocrLanguages';
+import { recordOcrPageMetric } from '@/services/ocrMetrics';
+import { recordPerformanceMetric } from '@/services/performanceMetrics';
+import {
+  CAMERA_REQUIRED_MESSAGE,
+  ensureMediaLibraryForImport,
+} from '@/services/requiredPermissions';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
+import { getPhotoLibraryAccessMode } from '@/services/photoAccessMode';
+import { useAppStore } from '@/store/app-store';
+import { authFlags } from '@/store/auth-flags';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    Linking,
+    Modal,
+    Platform,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const FREE_DOCUMENT_LIMIT = getFreeLimit('documents');
 const PDF_BUILD_TIMEOUT_MS = 6 * 60 * 1000;
@@ -49,6 +53,8 @@ const PDF_BUILD_TIMEOUT_MS = 6 * 60 * 1000;
 const DEFAULT_PDF_PAGE_PLACEMENT: 'fill' | 'fit' = 'fill';
 type OcrProcessingMode = 'auto' | 'document' | 'receipt' | 'handwritten';
 const OCR_PAGE_TIMEOUT_MS = 8000;
+/** Run this many OCR extractions in parallel per batch (multi-page finish). Reduces wall-clock time vs sequential; keep low to avoid OOM/native contention. */
+const MULTI_PAGE_OCR_CONCURRENCY = 3;
 
 /** JPEG quality for multi-page Expo Camera captures — scales down with page count for stability (former “Balanced” preset). */
 function getMultiPageCaptureQuality(pageCount: number): number {
@@ -110,6 +116,8 @@ export default function CaptureScreen() {
   const [multiPageDontShowAgain, setMultiPageDontShowAgain] = useState(false);
   const [mlKitScannerWarningVisible, setMlKitScannerWarningVisible] = useState(false);
   const [mlKitScannerDontShowAgain, setMlKitScannerDontShowAgain] = useState(false);
+  const [autoScanSurfaceTipVisible, setAutoScanSurfaceTipVisible] = useState(false);
+  const [autoScanSurfaceTipDontShowAgain, setAutoScanSurfaceTipDontShowAgain] = useState(false);
   const [pendingAfterUpgradeAction, setPendingAfterUpgradeAction] = useState<null | 'capture' | 'finishMultiPage'>(null);
   const [ocrOptionsVisible, setOcrOptionsVisible] = useState(false);
   const [proMultiPagePitchVisible, setProMultiPagePitchVisible] = useState(false);
@@ -123,10 +131,16 @@ export default function CaptureScreen() {
   /** After repeated ML Kit failures, user can fall back to Expo Camera without leaving the screen. */
   const [mlKitOverrideCamera, setMlKitOverrideCamera] = useState(false);
   const mlKitConsecutiveFailsRef = useRef(0);
+  /** After user continues past the 100-page ML Kit warning, skip showing it again when focus re-runs (e.g. returning from Google scanner). */
+  const mlKitMultiPageWarningAcknowledgedRef = useRef(false);
+  /** Avoid repeating the “limited photo access” toast on every gallery import in one visit. */
+  const limitedPhotoImportHintShownRef = useRef(false);
 
-  /** Android dev builds with ML Kit: skip Expo Camera preview and open the document scanner directly. */
-  const androidMlKitDirect =
+  /** ML Kit native scanner is available (still requires camera permission before use). */
+  const mlKitScannerAvailable =
     Platform.OS === 'android' && isAndroidMlKitScannerPlatform() && !mlKitOverrideCamera;
+  /** Only use ML Kit direct mode when the user has granted app camera permission — otherwise show the permission gate. */
+  const androidMlKitDirect = mlKitScannerAvailable && permission?.granted === true;
 
   const isPro = useAppStore((s) => s.isPro);
   const ocrReadTrialsUsed = useAppStore((s) => s.ocrReadTrialsUsed);
@@ -140,6 +154,8 @@ export default function CaptureScreen() {
   const setMultiPageLimitDisclaimerDismissed = useAppStore((s) => s.setMultiPageLimitDisclaimerDismissed);
   const mlKitMultiPageWarningDismissed = useAppStore((s) => s.mlKitMultiPageWarningDismissed);
   const setMlKitMultiPageWarningDismissed = useAppStore((s) => s.setMlKitMultiPageWarningDismissed);
+  const autoScanSurfaceTipDismissed = useAppStore((s) => s.autoScanSurfaceTipDismissed);
+  const setAutoScanSurfaceTipDismissed = useAppStore((s) => s.setAutoScanSurfaceTipDismissed);
   const ocrProcessingMode = useAppStore((s) => s.ocrProcessingMode);
   const setOcrProcessingMode = useAppStore((s) => s.setOcrProcessingMode);
   const ocrLanguage = useAppStore((s) => s.ocrLanguage);
@@ -162,6 +178,12 @@ export default function CaptureScreen() {
     }
   }, [isPro, multiPageMode]);
 
+  useEffect(() => {
+    if (!multiPageMode) {
+      mlKitMultiPageWarningAcknowledgedRef.current = false;
+    }
+  }, [multiPageMode]);
+
   const ocrReadsRemaining = getOcrReadTrialsRemaining(ocrReadTrialsUsed, firstLaunchAt);
   const headerTitle =
     flowPhase === 'chooser'
@@ -177,13 +199,6 @@ export default function CaptureScreen() {
       authFlags.systemPickerOpen = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (androidMlKitDirect) return;
-    if (activeTab === 'camera' && !permission?.granted) {
-      requestPermission();
-    }
-  }, [activeTab, permission?.granted, requestPermission, androidMlKitDirect]);
 
   useEffect(() => {
     if (!capturing) {
@@ -286,91 +301,111 @@ export default function CaptureScreen() {
         const weakPageIndexes: number[] = [];
         const totalPages = pageUris.length;
         setShowLongOpOverlay(true);
-        // Extract sequentially for stability (native OCR is CPU/GPU heavy).
-        for (let pageIndex = 0; pageIndex < pageUris.length; pageIndex++) {
-          setLongOpMessage(`Reading text: page ${pageIndex + 1} of ${totalPages}`);
-          setLongOpPercent(Math.round(((pageIndex) / totalPages) * 50));
-          const pageUri = pageUris[pageIndex];
-          const ocrPageStartedAt = Date.now();
-          const result = await withTimeout(
-            extractTextFromImageIfAvailable(pageUri, { mode: ocrProcessingMode, language: ocrLanguage }),
-            OCR_PAGE_TIMEOUT_MS,
-            'OCR page timed out'
-          ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR timeout' }));
-          if (!result.ok) {
-            await recordOcrPageMetric({
-              latencyMs: Date.now() - ocrPageStartedAt,
-              failed: true,
-              timedOut: /timeout/i.test(result.message ?? ''),
-            });
-            if (result.reason === 'expo-go') {
-              try {
+
+        ocrPass: for (let batchStart = 0; batchStart < totalPages; batchStart += MULTI_PAGE_OCR_CONCURRENCY) {
+          const batchEnd = Math.min(batchStart + MULTI_PAGE_OCR_CONCURRENCY, totalPages);
+          setLongOpMessage(`Reading text: pages ${batchStart + 1}–${batchEnd} of ${totalPages}`);
+          setLongOpPercent(Math.round((batchStart / totalPages) * 50));
+
+          const batchInputs = await Promise.all(
+            Array.from({ length: batchEnd - batchStart }, (_, k) => batchStart + k).map(async (pageIndex) => {
+              const pageUri = pageUris[pageIndex];
+              const ocrPageStartedAt = Date.now();
+              const result = await withTimeout(
+                extractTextFromImageIfAvailable(pageUri, { mode: ocrProcessingMode, language: ocrLanguage }),
+                OCR_PAGE_TIMEOUT_MS,
+                'OCR page timed out'
+              ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR timeout' }));
+              return { pageIndex, ocrPageStartedAt, result };
+            })
+          );
+
+          batchInputs.sort((a, b) => a.pageIndex - b.pageIndex);
+
+          for (const { pageIndex, ocrPageStartedAt, result } of batchInputs) {
+            if (!result.ok) {
+              await recordOcrPageMetric({
+                latencyMs: Date.now() - ocrPageStartedAt,
+                failed: true,
+                timedOut: /timeout/i.test(result.message ?? ''),
+              });
+              if (result.reason === 'expo-go') {
+                try {
                   await setOcrExtractOnCapture(false);
                   showToast(
                     'Text extraction from photos needs a development build. Turn it on from Add → Camera or Import (text from photo) after installing one.',
                     'info'
                   );
-              } catch {
-                // ignore
+                } catch {
+                  // ignore
+                }
+                for (let i = 0; i < pageResults.length; i += 1) {
+                  pageResults[i] = null;
+                }
+                break ocrPass;
               }
-              for (let i = 0; i < pageResults.length; i += 1) {
-                pageResults[i] = null;
+              if (result.reason === 'web') break ocrPass;
+              if (result.reason === 'unsupported') break ocrPass;
+              if (result.reason === 'error') {
+                if (__DEV__) console.warn('[OCR]', result.message);
+                showToast('OCR failed on this page. Try better lighting or steadier capture.', 'info');
               }
-              break;
+              continue;
             }
-              if (result.reason === 'web') break;
-            if (result.reason === 'unsupported') break;
-            if (result.reason === 'error') {
-              if (__DEV__) console.warn('[OCR]', result.message);
-              showToast('OCR failed on this page. Try better lighting or steadier capture.', 'info');
+            if (result.text && result.text.trim()) {
+              const weak = isWeakOcrText(result.text);
+              if (weak) weakPageIndexes.push(pageIndex);
+              await recordOcrPageMetric({
+                latencyMs: Date.now() - ocrPageStartedAt,
+                weak,
+              });
+              const consumed = await consumeOcrReadTrial();
+              if (!consumed) break ocrPass;
+              pageResults[pageIndex] = result.text.trim();
             }
-            continue;
-          }
-          if (result.text && result.text.trim()) {
-            const weak = isWeakOcrText(result.text);
-            if (weak) weakPageIndexes.push(pageIndex);
-            await recordOcrPageMetric({
-              latencyMs: Date.now() - ocrPageStartedAt,
-              weak,
-            });
-            const consumed = await consumeOcrReadTrial();
-            if (!consumed) break;
-            pageResults[pageIndex] = result.text.trim();
           }
         }
 
-        // Retry weak pages once with document mode for cleaner output.
+        // Retry weak pages once with document mode for cleaner output (batched parallel).
         if (weakPageIndexes.length > 0) {
           setLongOpMessage(`Retrying ${weakPageIndexes.length} weak page(s)…`);
           setLongOpPercent(50);
-          for (let ri = 0; ri < weakPageIndexes.length; ri++) {
-            const weakIndex = weakPageIndexes[ri];
-            setLongOpPercent(50 + Math.round(((ri) / weakPageIndexes.length) * 10));
-            const pageUri = pageUris[weakIndex];
-            const retryStartedAt = Date.now();
-            const retried = await withTimeout(
-              extractTextFromImageIfAvailable(pageUri, { mode: 'document', language: ocrLanguage }),
-              OCR_PAGE_TIMEOUT_MS,
-              'OCR retry timed out'
-            ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR retry timeout' }));
-            if (!retried.ok || !retried.text?.trim()) {
-              const retryMessage = !retried.ok ? retried.message ?? '' : '';
+          for (let wr = 0; wr < weakPageIndexes.length; wr += MULTI_PAGE_OCR_CONCURRENCY) {
+            const slice = weakPageIndexes.slice(wr, wr + MULTI_PAGE_OCR_CONCURRENCY);
+            setLongOpPercent(50 + Math.round((wr / weakPageIndexes.length) * 10));
+            const retryBatch = await Promise.all(
+              slice.map(async (weakIndex) => {
+                const pageUri = pageUris[weakIndex];
+                const retryStartedAt = Date.now();
+                const retried = await withTimeout(
+                  extractTextFromImageIfAvailable(pageUri, { mode: 'document', language: ocrLanguage }),
+                  OCR_PAGE_TIMEOUT_MS,
+                  'OCR retry timed out'
+                ).catch(() => ({ ok: false as const, text: null, reason: 'error' as const, message: 'OCR retry timeout' }));
+                return { weakIndex, retryStartedAt, retried };
+              })
+            );
+            retryBatch.sort((a, b) => a.weakIndex - b.weakIndex);
+            for (const { weakIndex, retryStartedAt, retried } of retryBatch) {
+              if (!retried.ok || !retried.text?.trim()) {
+                const retryMessage = !retried.ok ? retried.message ?? '' : '';
+                await recordOcrPageMetric({
+                  latencyMs: Date.now() - retryStartedAt,
+                  retried: true,
+                  failed: true,
+                  timedOut: /timeout/i.test(retryMessage),
+                });
+                continue;
+              }
+              const improved = !isWeakOcrText(retried.text);
               await recordOcrPageMetric({
                 latencyMs: Date.now() - retryStartedAt,
                 retried: true,
-                failed: true,
-                timedOut: /timeout/i.test(retryMessage),
+                improved,
               });
-              continue;
-            }
-            const improved = !isWeakOcrText(retried.text);
-            await recordOcrPageMetric({
-              latencyMs: Date.now() - retryStartedAt,
-              retried: true,
-              improved,
-            });
-            if (improved) {
-              pageResults[weakIndex] = retried.text.trim();
+              if (improved) {
+                pageResults[weakIndex] = retried.text.trim();
+              }
             }
           }
           showToast('OCR retry completed for weak pages.', 'info');
@@ -521,12 +556,23 @@ export default function CaptureScreen() {
   }, []);
 
   const runAndroidMlKitDocumentScan = useCallback(
-    async (options?: { skipMlKitMultiPageWarning?: boolean }) => {
+    async (options?: { skipMlKitMultiPageWarning?: boolean; skipAutoScanSurfaceTip?: boolean }) => {
     if (capturingRef.current) return;
+    const camPerm = await Camera.getCameraPermissionsAsync();
+    if (!camPerm.granted) {
+      Alert.alert('Permission needed', CAMERA_REQUIRED_MESSAGE);
+      return;
+    }
+    if (!options?.skipAutoScanSurfaceTip && !autoScanSurfaceTipDismissed) {
+      setAutoScanSurfaceTipDontShowAgain(false);
+      setAutoScanSurfaceTipVisible(true);
+      return;
+    }
     if (
       multiPageMode &&
       !mlKitMultiPageWarningDismissed &&
-      !options?.skipMlKitMultiPageWarning
+      !options?.skipMlKitMultiPageWarning &&
+      !mlKitMultiPageWarningAcknowledgedRef.current
     ) {
       setMlKitScannerDontShowAgain(false);
       setMlKitScannerWarningVisible(true);
@@ -618,7 +664,7 @@ export default function CaptureScreen() {
       setCapturing(false);
     }
   },
-  [leaveCaptureScreen, mlKitMultiPageWarningDismissed, multiPageMode]
+  [leaveCaptureScreen, autoScanSurfaceTipDismissed, mlKitMultiPageWarningDismissed, multiPageMode]
 );
 
   const handleCapture = async () => {
@@ -701,13 +747,15 @@ export default function CaptureScreen() {
       setMultiPageImages([]);
       return;
     }
-    if (!multiPageLimitDisclaimerDismissed) {
+    // ML Kit direct: `runAndroidMlKitDocumentScan` (from focus) shows the 100-page scanner notice;
+    // skip the generic multi-page modal here so users are not warned twice about the same limit.
+    if (!androidMlKitDirect && !multiPageLimitDisclaimerDismissed) {
       setMultiPageDontShowAgain(false);
       setMultiPageDisclaimerVisible(true);
       return;
     }
     setMultiPageMode(true);
-  }, [isPro, multiPageMode, multiPageLimitDisclaimerDismissed]);
+  }, [isPro, multiPageMode, multiPageLimitDisclaimerDismissed, androidMlKitDirect]);
 
   const beginActiveCameraFlow = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -753,7 +801,19 @@ export default function CaptureScreen() {
   };
 
   const handleImportImage = async () => {
+    if (!(await ensureMediaLibraryForImport())) return;
     try {
+      const accessMode = await getPhotoLibraryAccessMode();
+      if (
+        accessMode === 'limited' &&
+        !limitedPhotoImportHintShownRef.current
+      ) {
+        limitedPhotoImportHintShownRef.current = true;
+        showToast(
+          'Limited photo access: your device will ask which photos to add next — this is expected.',
+          'info'
+        );
+      }
       authFlags.systemPickerOpen = true;
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -987,7 +1047,7 @@ export default function CaptureScreen() {
             <View style={styles.chooserPrimaryText}>
               <Text style={styles.chooserPrimaryTitle}>Scan with camera</Text>
               <Text style={styles.chooserPrimarySubtitle}>
-                {androidMlKitDirect
+                {mlKitScannerAvailable
                   ? 'Opens Google’s document scanner (crop, filters, multi-page when enabled above).'
                   : 'Use the camera to capture a page or multi-page set.'}
               </Text>
@@ -1002,7 +1062,7 @@ export default function CaptureScreen() {
             <View style={styles.chooserPrimaryText}>
               <Text style={styles.chooserPrimaryTitle}>Import</Text>
               <Text style={styles.chooserPrimarySubtitle}>
-                {androidMlKitDirect
+                {mlKitScannerAvailable
                   ? 'Vault’s import picker first. You can open Google’s document scanner from the Import tab only if you want to crop there.'
                   : 'Photos, PDF, Word, Excel, and other files from your device.'}
               </Text>
@@ -1080,7 +1140,7 @@ export default function CaptureScreen() {
               onOpenOcrOptions={() => setOcrOptionsVisible(true)}
               ocrReadsRemaining={ocrReadsRemaining}
               isPro={isPro}
-              mlKitScannerOptional={androidMlKitDirect}
+              mlKitScannerOptional={mlKitScannerAvailable}
               onOpenMlKitDocumentScanner={() => {
                 void runAndroidMlKitDocumentScan();
               }}
@@ -1271,6 +1331,61 @@ export default function CaptureScreen() {
         </TouchableOpacity>
       </Modal>
       <Modal
+        visible={autoScanSurfaceTipVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAutoScanSurfaceTipVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.stressPickerOverlay}
+          activeOpacity={1}
+          onPress={() => setAutoScanSurfaceTipVisible(false)}
+        >
+          <TouchableOpacity
+            style={styles.stressPickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.stressPickerTitle}>Auto-scan</Text>
+            <Text style={styles.stressPickerHint}>
+              Choose a flat surface with good lighting to use the auto-scan feature.
+            </Text>
+            <TouchableOpacity
+              style={styles.disclaimerCheckRow}
+              activeOpacity={0.8}
+              onPress={() => setAutoScanSurfaceTipDontShowAgain((v) => !v)}
+            >
+              <Ionicons
+                name={autoScanSurfaceTipDontShowAgain ? 'checkbox-outline' : 'square-outline'}
+                size={20}
+                color={Colors.primary}
+              />
+              <Text style={styles.disclaimerCheckText}>Do not show this again</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.stressPickerBtn}
+              activeOpacity={0.8}
+              onPress={async () => {
+                if (autoScanSurfaceTipDontShowAgain) {
+                  await setAutoScanSurfaceTipDismissed(true);
+                }
+                setAutoScanSurfaceTipVisible(false);
+                void runAndroidMlKitDocumentScan({ skipAutoScanSurfaceTip: true });
+              }}
+            >
+              <Text style={styles.stressPickerBtnText}>Continue</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.stressPickerBtn, styles.stressPickerCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setAutoScanSurfaceTipVisible(false)}
+            >
+              <Text style={styles.stressPickerCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+      <Modal
         visible={multiPageDisclaimerVisible}
         transparent
         animationType="fade"
@@ -1366,8 +1481,12 @@ export default function CaptureScreen() {
                 if (mlKitScannerDontShowAgain) {
                   await setMlKitMultiPageWarningDismissed(true);
                 }
+                mlKitMultiPageWarningAcknowledgedRef.current = true;
                 setMlKitScannerWarningVisible(false);
-                void runAndroidMlKitDocumentScan({ skipMlKitMultiPageWarning: true });
+                void runAndroidMlKitDocumentScan({
+                  skipMlKitMultiPageWarning: true,
+                  skipAutoScanSurfaceTip: true,
+                });
               }}
             >
               <Text style={styles.stressPickerBtnText}>Continue</Text>
@@ -1388,7 +1507,7 @@ export default function CaptureScreen() {
 
 type CameraTabProps = {
   permission: ReturnType<typeof useCameraPermissions>[0];
-  requestPermission: () => void;
+  requestPermission: () => Promise<{ granted: boolean }>;
   cameraRef: React.RefObject<CameraView | null>;
   facing: 'back' | 'front';
   flash: 'off' | 'on';
@@ -1468,16 +1587,37 @@ function CameraTab({
   }
 
   if (!permission.granted) {
+    const blocked = permission.canAskAgain === false;
     return (
       <View style={styles.centerContainer}>
         <Ionicons name="camera-outline" size={64} color={Colors.textMuted} />
-        <Text style={styles.permissionTitle}>Camera Access Required</Text>
-        <Text style={styles.permissionSubtitle}>
-          Allow camera access to scan and capture documents directly.
-        </Text>
-        <TouchableOpacity style={styles.permissionBtn} onPress={requestPermission} activeOpacity={0.8}>
-          <Text style={styles.permissionBtnText}>Grant Permission</Text>
+        <Text style={styles.permissionTitle}>Scan documents with your camera</Text>
+        <Text style={styles.permissionSubtitle}>{CAMERA_REQUIRED_MESSAGE}</Text>
+        <TouchableOpacity
+          style={styles.permissionBtn}
+          onPress={async () => {
+            const res = await requestPermission();
+            if (!res.granted) {
+              Alert.alert('Permission needed', CAMERA_REQUIRED_MESSAGE);
+            }
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.permissionBtnText}>Allow camera access</Text>
         </TouchableOpacity>
+        {blocked && Platform.OS === 'android' ? (
+          <TouchableOpacity
+            style={styles.permissionSecondaryBtn}
+            onPress={() => void Linking.openSettings()}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.permissionSecondaryBtnText}>Open Android settings</Text>
+          </TouchableOpacity>
+        ) : null}
+        <Text style={styles.permissionFootnote}>
+          Use the Import tab to add files without the camera; the system may still ask for file or photo access when you
+          pick items.
+        </Text>
         <TouchableOpacity
           style={styles.multiChip}
           onPress={onOpenOcrOptions}
@@ -1894,6 +2034,22 @@ const styles = StyleSheet.create({
     color: Colors.white,
     fontSize: Typography.fontSizeBase,
     fontWeight: Typography.fontWeightSemibold,
+  },
+  permissionSecondaryBtn: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+  },
+  permissionSecondaryBtnText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
+  },
+  permissionFootnote: {
+    color: Colors.textMuted,
+    fontSize: Typography.fontSizeXs,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginTop: Spacing.xs,
   },
   cameraContainer: {
     flex: 1,

@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import type { FileType } from '@/db/types';
 import { useAppStore } from '@/store/app-store';
+import { useShallow } from 'zustand/react/shallow';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { LimitReachedDialog } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
@@ -28,7 +29,17 @@ export default function ImportReviewScreen() {
     loadDocuments,
     addDocument,
     setSelectedCategoryId,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((s) => ({
+      pendingBulkImports: s.pendingBulkImports,
+      clearPendingBulkImports: s.clearPendingBulkImports,
+      categories: s.categories,
+      loadCategories: s.loadCategories,
+      loadDocuments: s.loadDocuments,
+      addDocument: s.addDocument,
+      setSelectedCategoryId: s.setSelectedCategoryId,
+    }))
+  );
 
   const [importCategoryId, setImportCategoryId] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
@@ -58,7 +69,8 @@ export default function ImportReviewScreen() {
           importCategoryId,
           null,
           null,
-          null
+          null,
+          { skipReload: true }
         );
       }
       clearPendingBulkImports();

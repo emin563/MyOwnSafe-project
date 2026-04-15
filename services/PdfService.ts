@@ -2,6 +2,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { withExternalActivityGuard } from '@/store/auth-flags';
 import * as LegacyFS from 'expo-file-system/legacy';
+import { isUriUnderAppSandboxDirectories } from '@/services/archiveUri';
 import { PDFDocument } from 'pdf-lib';
 import type { Document } from '@/db/types';
 
@@ -110,30 +111,40 @@ export async function createPdfFromImages(
   }
 
   const chunkUris: string[] = [];
-  const totalChunks = Math.ceil(imageUris.length / PDF_CHUNK_PAGE_COUNT);
-  for (let i = 0; i < imageUris.length; i += PDF_CHUNK_PAGE_COUNT) {
-    const chunkIndex = Math.floor(i / PDF_CHUNK_PAGE_COUNT);
-    onProgress?.({ stage: 'chunk', current: chunkIndex + 1, total: totalChunks });
-    const chunk = imageUris.slice(i, i + PDF_CHUNK_PAGE_COUNT);
-    const chunkUri = await createPdfChunk(chunk, chunkIndex, options?.pagePlacementMode ?? 'fill');
-    chunkUris.push(chunkUri);
-  }
+  try {
+    const totalChunks = Math.ceil(imageUris.length / PDF_CHUNK_PAGE_COUNT);
+    for (let i = 0; i < imageUris.length; i += PDF_CHUNK_PAGE_COUNT) {
+      const chunkIndex = Math.floor(i / PDF_CHUNK_PAGE_COUNT);
+      onProgress?.({ stage: 'chunk', current: chunkIndex + 1, total: totalChunks });
+      const chunk = imageUris.slice(i, i + PDF_CHUNK_PAGE_COUNT);
+      const chunkUri = await createPdfChunk(chunk, chunkIndex, options?.pagePlacementMode ?? 'fill');
+      chunkUris.push(chunkUri);
+    }
 
-  const mergedPdf = await PDFDocument.create();
-  for (let i = 0; i < chunkUris.length; i += 1) {
-    onProgress?.({ stage: 'merge', current: i + 1, total: chunkUris.length });
-    const chunkUri = chunkUris[i];
-    const chunkBase64 = await LegacyFS.readAsStringAsync(chunkUri, { encoding: LegacyFS.EncodingType.Base64 });
-    const sourcePdf = await PDFDocument.load(chunkBase64);
-    const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
-    pages.forEach((p) => mergedPdf.addPage(p));
-  }
+    const mergedPdf = await PDFDocument.create();
+    for (let i = 0; i < chunkUris.length; i += 1) {
+      onProgress?.({ stage: 'merge', current: i + 1, total: chunkUris.length });
+      const chunkUri = chunkUris[i];
+      const chunkBase64 = await LegacyFS.readAsStringAsync(chunkUri, { encoding: LegacyFS.EncodingType.Base64 });
+      const sourcePdf = await PDFDocument.load(chunkBase64);
+      const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+      pages.forEach((p) => mergedPdf.addPage(p));
+    }
 
-  onProgress?.({ stage: 'finalize', current: 1, total: 1 });
-  const mergedBase64 = await mergedPdf.saveAsBase64();
-  const mergedUri = `${LegacyFS.cacheDirectory}scan_merged_${Date.now()}.pdf`;
-  await LegacyFS.writeAsStringAsync(mergedUri, mergedBase64, { encoding: LegacyFS.EncodingType.Base64 });
-  return mergedUri;
+    onProgress?.({ stage: 'finalize', current: 1, total: 1 });
+    const mergedBase64 = await mergedPdf.saveAsBase64();
+    const mergedUri = `${LegacyFS.cacheDirectory}scan_merged_${Date.now()}.pdf`;
+    await LegacyFS.writeAsStringAsync(mergedUri, mergedBase64, { encoding: LegacyFS.EncodingType.Base64 });
+    return mergedUri;
+  } finally {
+    for (const chunkUri of chunkUris) {
+      try {
+        await LegacyFS.deleteAsync(chunkUri, { idempotent: true });
+      } catch {
+        // Non-critical cleanup
+      }
+    }
+  }
 }
 
 function escapeHtml(str: string): string {
@@ -336,7 +347,7 @@ export async function exportDocumentAsPdf(
 
   try {
     const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
+    if (canShare && isUriUnderAppSandboxDirectories(pdfUri)) {
       await withExternalActivityGuard(() =>
         Sharing.shareAsync(pdfUri, {
           mimeType: 'application/pdf',

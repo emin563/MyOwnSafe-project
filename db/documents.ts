@@ -1,15 +1,26 @@
 import { getDb } from './schema';
 import type { Document, FileType } from './types';
 
+/** List/dashboard columns — omits heavy `ocr_text` (loaded on open in `getDocumentById`). */
+export const DOCUMENT_LIST_COLUMNS =
+  'id, category_id, title, file_uri, file_type, purchase_price, expiry_date, notes, notification_id, created_at, updated_at';
+
+/** Same as `DOCUMENT_LIST_COLUMNS` but with table alias `d.` (for JOIN queries). */
+export const DOCUMENT_LIST_SELECT_D = DOCUMENT_LIST_COLUMNS.split(', ')
+  .map((c) => `d.${c.trim()}`)
+  .join(', ');
+
 export async function getDocuments(categoryId?: number | null): Promise<Document[]> {
   const db = await getDb();
   if (categoryId !== null && categoryId !== undefined) {
     return db.getAllAsync<Document>(
-      'SELECT * FROM documents WHERE category_id = ? ORDER BY updated_at DESC',
+      `SELECT ${DOCUMENT_LIST_COLUMNS} FROM documents WHERE category_id = ? ORDER BY updated_at DESC`,
       [categoryId]
     );
   }
-  return db.getAllAsync<Document>('SELECT * FROM documents ORDER BY updated_at DESC');
+  return db.getAllAsync<Document>(
+    `SELECT ${DOCUMENT_LIST_COLUMNS} FROM documents ORDER BY updated_at DESC`
+  );
 }
 
 export async function getDocumentById(id: number): Promise<Document | null> {
@@ -90,15 +101,20 @@ export async function deleteDocument(id: number): Promise<void> {
 
 /**
  * Build an FTS5 MATCH expression from a user query string.
- * Each whitespace-separated token is quoted and turned into a prefix match.
+ * Tokens use prefix matches; multiple tokens are AND-ed (all must match somewhere).
+ * When `includeOcr` is false, only `title` and `notes` columns are searched via FTS5 column filter.
  */
-function buildFtsMatchExpr(query: string): string {
+function buildFtsMatchExpr(query: string, includeOcr: boolean): string {
   const tokens = query
     .replace(/['"*(){}[\]^~!@#$%&|\\:;,.?/<>+=]/g, ' ')
     .split(/\s+/)
     .filter((t) => t.length > 0);
   if (tokens.length === 0) return '';
-  return tokens.map((t) => `"${t}"*`).join(' OR ');
+  const inner = tokens.map((t) => `"${t}"*`).join(' AND ');
+  if (includeOcr) {
+    return inner;
+  }
+  return `{title notes} : ${inner}`;
 }
 
 export async function searchDocuments(
@@ -112,11 +128,11 @@ export async function searchDocuments(
   const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 200;
 
   // Try FTS5 first (orders of magnitude faster than LIKE on large tables).
-  const ftsExpr = buildFtsMatchExpr(query);
+  const ftsExpr = buildFtsMatchExpr(query, includeOcr);
   if (ftsExpr) {
     try {
       return await db.getAllAsync<Document>(
-        `SELECT d.* FROM documents d
+        `SELECT ${DOCUMENT_LIST_SELECT_D} FROM documents d
          WHERE d.id IN (
            SELECT rowid FROM documents_fts WHERE documents_fts MATCH ?
          )
@@ -138,7 +154,7 @@ export async function searchDocuments(
   // Fallback: LIKE-based search (works on any SQLite build)
   const ocrClause = includeOcr ? ` OR d.ocr_text LIKE ? ESCAPE '\\'` : '';
   return db.getAllAsync<Document>(
-    `SELECT d.* FROM documents d
+    `SELECT ${DOCUMENT_LIST_SELECT_D} FROM documents d
      WHERE d.title LIKE ? ESCAPE '\\' OR d.notes LIKE ? ESCAPE '\\'
        OR EXISTS (
          SELECT 1
@@ -163,7 +179,7 @@ export async function getTotalFileCount(): Promise<number> {
 export async function getDocumentsExpiringSoon(daysAhead: number = 30): Promise<Document[]> {
   const db = await getDb();
   return db.getAllAsync<Document>(
-    `SELECT * FROM documents
+    `SELECT ${DOCUMENT_LIST_COLUMNS} FROM documents
      WHERE expiry_date IS NOT NULL
        AND expiry_date <= date('now', '+' || ? || ' days')
        AND expiry_date >= date('now')

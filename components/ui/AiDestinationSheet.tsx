@@ -10,6 +10,7 @@ import { AI_DESTINATIONS, type AiDestination } from '@/services/AiDestinations';
 import { getSetting, setSetting } from '@/db/settings';
 import { useAppStore } from '@/store/app-store';
 import { withExternalActivityGuard } from '@/store/auth-flags';
+import { isAllowedShareSourceUri } from '@/services/archiveUri';
 
 type Props = {
   visible: boolean;
@@ -44,6 +45,10 @@ export function AiDestinationSheet({ visible, onClose, fileUri, minimal = false 
 
   const shareFileToSheet = async () => {
     if (!fileUri) return;
+    if (!isAllowedShareSourceUri(fileUri)) {
+      showToast('Cannot share this file from here.', 'info');
+      return;
+    }
     const canShare = await Sharing.isAvailableAsync();
     if (!canShare) return;
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

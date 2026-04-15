@@ -1,8 +1,16 @@
 import { Platform } from 'react-native';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { TokenResponse } from 'expo-auth-session/build/TokenRequest';
 import { getGoogleDriveOAuthConfig, isGoogleDriveOAuthConfigured } from '@/config/googleDrive';
 import type { FileType } from '@/db/types';
 import { deleteSetting, getSetting, setSetting } from '@/db/settings';
+import {
+  isAllowedArchiveFileUri,
+  isUriUnderAppSandboxDirectories,
+} from '@/services/archiveUri';
+
+/** Serializes per-document Drive uploads (bulk imports no longer spam parallel sessions). */
+let driveDocumentUploadQueue: Promise<void> = Promise.resolve();
 
 const SECURE_TOKEN_KEY = 'vault_google_drive_token_v1';
 const SECURE_FOLDER_KEY = 'vault_google_drive_vault_folder_id_v1';
@@ -21,6 +29,10 @@ const GOOGLE_TOKEN_DISCOVERY = {
 type ExpoSecureStoreModule = typeof import('expo-secure-store');
 let secureStoreModule: ExpoSecureStoreModule | null | undefined;
 
+function allowSqliteTokenFallback(): boolean {
+  return __DEV__ || Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+}
+
 function resolveExpoSecureStore(): ExpoSecureStoreModule | null {
   if (secureStoreModule !== undefined) return secureStoreModule;
   try {
@@ -38,6 +50,9 @@ async function vaultStorageGet(which: 'token' | 'folder'): Promise<string | null
     const k = which === 'token' ? SECURE_TOKEN_KEY : SECURE_FOLDER_KEY;
     return ss.getItemAsync(k);
   }
+  if (!allowSqliteTokenFallback()) {
+    return null;
+  }
   const k = which === 'token' ? SQLITE_TOKEN_KEY : SQLITE_FOLDER_KEY;
   return getSetting(k);
 }
@@ -49,6 +64,9 @@ async function vaultStorageSet(which: 'token' | 'folder', value: string): Promis
     await ss.setItemAsync(k, value);
     return;
   }
+  if (!allowSqliteTokenFallback()) {
+    throw new Error('Secure storage is unavailable on this build.');
+  }
   const k = which === 'token' ? SQLITE_TOKEN_KEY : SQLITE_FOLDER_KEY;
   await setSetting(k, value);
 }
@@ -58,6 +76,9 @@ async function vaultStorageDelete(which: 'token' | 'folder'): Promise<void> {
   if (ss) {
     const k = which === 'token' ? SECURE_TOKEN_KEY : SECURE_FOLDER_KEY;
     await ss.deleteItemAsync(k);
+    return;
+  }
+  if (!allowSqliteTokenFallback()) {
     return;
   }
   const k = which === 'token' ? SQLITE_TOKEN_KEY : SQLITE_FOLDER_KEY;
@@ -187,9 +208,47 @@ export async function getGoogleDriveAccountLinkStatus(): Promise<GoogleDriveAcco
   };
 }
 
+/**
+ * Clears the cached Vault folder id and resolves the folder again (find existing "Vault" under root
+ * or create it). Call from Settings if the user deleted the folder in Drive or uploads fail.
+ * Auto-upload does not need to be on; this only ensures the destination folder exists for future uploads.
+ */
+export async function ensureGoogleDriveVaultFolderReady(): Promise<string> {
+  const accessToken = await getFreshAccessToken();
+  if (!accessToken) {
+    throw new Error('Google Drive is not connected or the session expired.');
+  }
+  await vaultStorageDelete('folder');
+  return getOrLoadFolderId(accessToken);
+}
+
+/**
+ * Returns false if the folder was deleted, trashed, or we can no longer access it (e.g. 404/403).
+ */
+async function verifyVaultFolderAccessible(accessToken: string, folderId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${DRIVE_FILES}/${encodeURIComponent(folderId)}?fields=id,trashed`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 404 || res.status === 401) return false;
+    if (!res.ok) {
+      if (res.status === 403) return false;
+      return true;
+    }
+    const data = (await res.json()) as { trashed?: boolean };
+    return data.trashed !== true;
+  } catch {
+    return false;
+  }
+}
+
 async function getOrLoadFolderId(accessToken: string): Promise<string> {
   const cached = await vaultStorageGet('folder');
-  if (cached) return cached;
+  if (cached) {
+    const ok = await verifyVaultFolderAccessible(accessToken, cached);
+    if (ok) return cached;
+    await vaultStorageDelete('folder');
+  }
 
   const q = encodeURIComponent(
     "mimeType='application/vnd.google-apps.folder' and name='Vault' and trashed=false and 'root' in parents"
@@ -318,8 +377,13 @@ function toNativeReadablePath(fileUri: string): string {
 async function uploadLocalFileToVaultFolder(
   fileUri: string,
   displayFileName: string,
-  contentType: string
+  contentType: string,
+  onUploadProgress?: (written: number, total: number) => void
 ): Promise<void> {
+  if (!isUriUnderAppSandboxDirectories(fileUri)) {
+    throw new Error('Google Drive upload refused: file is outside the app sandbox.');
+  }
+
   const accessToken = await getFreshAccessToken();
   if (!accessToken) {
     throw new Error('Google Drive is not connected or the session expired. Connect again in Settings.');
@@ -365,7 +429,9 @@ async function uploadLocalFileToVaultFolder(
     throw new Error('Drive upload session returned no Location header.');
   }
 
-  const uploadResp = await RNBlob.fetch(
+  onUploadProgress?.(0, size);
+
+  const uploadPromise = RNBlob.fetch(
     'PUT',
     sessionUrl,
     {
@@ -375,6 +441,14 @@ async function uploadLocalFileToVaultFolder(
     RNBlob.wrap(nativePath)
   );
 
+  if (onUploadProgress) {
+    uploadPromise.uploadProgress({ interval: 150 }, (written, total) => {
+      onUploadProgress(written, total);
+    });
+  }
+
+  const uploadResp = await uploadPromise;
+
   const status = uploadResp.info().status;
   if (status < 200 || status >= 300) {
     const t = await uploadResp.text();
@@ -383,13 +457,114 @@ async function uploadLocalFileToVaultFolder(
 }
 
 /**
- * Uploads the local backup zip to the user's Google Drive (Vault folder). Best-effort; throws on hard failures.
+ * Uploads one vault document file to Drive (same naming and MIME rules as auto-upload).
+ * Throws on failure (unlike {@link maybeUploadVaultDocumentToGoogleDrive}).
+ */
+async function uploadVaultDocumentFileToDrive(
+  fileUri: string,
+  fileType: FileType,
+  title: string,
+  documentId: number
+): Promise<void> {
+  const ext = extensionFromFileUri(fileUri);
+  const extForName =
+    ext || (fileType === 'pdf' ? '.pdf' : fileType === 'image' ? '.jpg' : '.bin');
+  const extLower = extForName.toLowerCase();
+  const displayName = driveDocumentDisplayName(documentId, title, extForName);
+  const contentType = contentTypeForVaultFile(fileType, extLower);
+  await uploadLocalFileToVaultFolder(fileUri, displayName, contentType);
+}
+
+export type UploadAllVaultDocumentsToGoogleDriveResult = {
+  total: number;
+  uploaded: number;
+  failed: number;
+  skipped: number;
+  firstError?: string;
+};
+
+/**
+ * Uploads every local vault document file to the Drive Vault folder (backfill).
+ * Requires Pro, linked account, OAuth configured, and auto-upload enabled (same policy as per-save uploads).
+ */
+export async function uploadAllVaultDocumentsToGoogleDriveNow(): Promise<UploadAllVaultDocumentsToGoogleDriveResult> {
+  if (Platform.OS !== 'android') {
+    throw new Error('Google Drive is only available on Android.');
+  }
+  if (!isGoogleDriveOAuthConfigured()) {
+    throw new Error('Google Drive is not configured in this build.');
+  }
+
+  const { useAppStore } = await import('@/store/app-store');
+  if (!useAppStore.getState().isPro) {
+    throw new Error('Pro is required for Google Drive backup.');
+  }
+
+  const auto = await getSetting('googleDriveAutoUpload');
+  if (auto === '0') {
+    throw new Error('Turn on auto-upload to Drive to back up your vault files.');
+  }
+
+  const connected = await isGoogleDriveConnected();
+  if (!connected) {
+    throw new Error('Connect Google Drive first.');
+  }
+
+  const { getDocuments } = await import('@/db/documents');
+  const docs = await getDocuments();
+
+  let uploaded = 0;
+  let failed = 0;
+  let skipped = 0;
+  let firstError: string | undefined;
+
+  for (const d of docs) {
+    const uri = d.file_uri?.trim();
+    if (!uri) {
+      skipped += 1;
+      continue;
+    }
+    if (!isAllowedArchiveFileUri(uri)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await uploadVaultDocumentFileToDrive(uri, d.file_type, d.title, d.id);
+      uploaded += 1;
+    } catch (e) {
+      failed += 1;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!firstError) firstError = msg;
+    }
+  }
+
+  const result: UploadAllVaultDocumentsToGoogleDriveResult = {
+    total: docs.length,
+    uploaded,
+    failed,
+    skipped,
+    ...(firstError ? { firstError } : {}),
+  };
+
+  return result;
+}
+
+/**
+ * Uploads a single zip file to the user's Google Drive Vault folder.
+ * **Not** used by “Create backup” (local zip export). Ongoing sync uses per-file
+ * `maybeUploadVaultDocumentToGoogleDrive` when documents are saved. Kept for
+ * optional future tooling or manual triggers.
  */
 export async function uploadVaultBackupZipToGoogleDrive(
   zipFileUri: string,
-  displayFileName: string
+  displayFileName: string,
+  onUploadProgress?: (written: number, total: number) => void
 ): Promise<void> {
-  await uploadLocalFileToVaultFolder(zipFileUri, displayFileName, 'application/zip');
+  const z = zipFileUri.trim();
+  if (!isUriUnderAppSandboxDirectories(z) || !z.toLowerCase().endsWith('.zip')) {
+    throw new Error('Google Drive backup upload refused: expected a .zip under app storage.');
+  }
+  await uploadLocalFileToVaultFolder(z, displayFileName, 'application/zip', onUploadProgress);
 }
 
 /**
@@ -405,8 +580,8 @@ export async function maybeUploadVaultDocumentToGoogleDrive(
   if (Platform.OS !== 'android') return;
   if (!isGoogleDriveOAuthConfigured()) return;
 
-  const pro = await getSetting('isPro');
-  if (pro !== 'true') return;
+  const { useAppStore } = await import('@/store/app-store');
+  if (!useAppStore.getState().isPro) return;
 
   const auto = await getSetting('googleDriveAutoUpload');
   if (auto === '0') return;
@@ -414,42 +589,47 @@ export async function maybeUploadVaultDocumentToGoogleDrive(
   const connected = await isGoogleDriveConnected();
   if (!connected) return;
 
-  try {
-    const ext = extensionFromFileUri(fileUri);
-    const extForName =
-      ext || (fileType === 'pdf' ? '.pdf' : fileType === 'image' ? '.jpg' : '.bin');
-    const extLower = extForName.toLowerCase();
-    const displayName = driveDocumentDisplayName(documentId, title, extForName);
-    const contentType = contentTypeForVaultFile(fileType, extLower);
-    await uploadLocalFileToVaultFolder(fileUri, displayName, contentType);
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+  if (!isAllowedArchiveFileUri(fileUri)) {
     if (__DEV__) {
-      console.warn('[Drive document upload]', message);
+      console.warn('[Drive document upload] skipped: file URI is not under the vault archive');
     }
-    try {
-      const { useAppStore } = await import('@/store/app-store');
-      const short =
-        message.length > 140 ? `${message.slice(0, 137)}…` : message;
-      useAppStore.getState().showToast(`Drive upload: ${short}`, 'info');
-    } catch {
-      /* avoid import cycles / store not ready */
-    }
+    return;
   }
+
+  driveDocumentUploadQueue = driveDocumentUploadQueue.then(async () => {
+    try {
+      await uploadVaultDocumentFileToDrive(fileUri, fileType, title, documentId);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (__DEV__) {
+        console.warn('[Drive document upload]', message);
+      }
+      try {
+        const { useAppStore } = await import('@/store/app-store');
+        const short =
+          message.length > 140 ? `${message.slice(0, 137)}…` : message;
+        useAppStore.getState().showToast(`Drive upload: ${short}`, 'info');
+      } catch {
+        /* avoid import cycles / store not ready */
+      }
+    }
+  });
 }
 
 /**
- * If the user enabled auto-upload and Drive is connected, uploads silently. Swallows errors (backup/share still proceeds).
+ * Optional full-zip upload to Drive (not wired from Create backup). Document saves use
+ * `maybeUploadVaultDocumentToGoogleDrive` instead. Swallows errors.
  */
 export async function maybeUploadVaultBackupToGoogleDrive(
   zipFileUri: string,
-  displayFileName: string
+  displayFileName: string,
+  onUploadProgress?: (written: number, total: number) => void
 ): Promise<void> {
   if (Platform.OS !== 'android') return;
   if (!isGoogleDriveOAuthConfigured()) return;
 
-  const pro = await getSetting('isPro');
-  if (pro !== 'true') return;
+  const { useAppStore } = await import('@/store/app-store');
+  if (!useAppStore.getState().isPro) return;
 
   const auto = await getSetting('googleDriveAutoUpload');
   if (auto === '0') return;
@@ -457,8 +637,13 @@ export async function maybeUploadVaultBackupToGoogleDrive(
   const connected = await isGoogleDriveConnected();
   if (!connected) return;
 
+  const z = zipFileUri.trim();
+  if (!isUriUnderAppSandboxDirectories(z) || !z.toLowerCase().endsWith('.zip')) {
+    return;
+  }
+
   try {
-    await uploadVaultBackupZipToGoogleDrive(zipFileUri, displayFileName);
+    await uploadVaultBackupZipToGoogleDrive(z, displayFileName, onUploadProgress);
   } catch {
     // Intentionally silent: do not block share sheet or alarm the user for optional cloud copy.
   }

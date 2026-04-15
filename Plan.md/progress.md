@@ -1,6 +1,6 @@
 # Progress & Tasks
 
-Overview of plans, tasks, and completion status. See `.cursor/plans/` for full plan docs.
+Overview of plans, tasks, and completion status. See `.cursor/plans/` for full plan docs. **Recent product/UX context:** §**5c** (Pro billing vs dev preview, persisted quiz, About hiding, Warranties icon); §**5d** (photo permissions + limited-access UX); details in **`Plan.md/AGENTS.md`**.
 
 ---
 
@@ -117,6 +117,38 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 
 ---
 
+## 5c. Pro entitlement, dev simulation, quiz persistence, and UX (2026)
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| Split **billing** vs **dev preview**: `billingProEntitled` + `proBillingEntitled` in `settings`; `devProPreview` + `setDevProPreview` (__DEV__ only); `isPro` = `computeEffectivePro(...)`; remove `setIsPro` | ✅ Done |
+| `loadSettings` / `purchasePro` / `restorePro` / `syncProStatus` + RC sync; **`clearQuizWhyProData()`** when entitled | ✅ Done |
+| `services/quizWhyProStorage.ts`: persist quiz answers + step index; clear on Pro | ✅ Done |
+| `QuizWhyPro`: 3-question flow, lock on first tap, Back/Next, pitch + summary; hydrate from storage; **null** if `isPro` | ✅ Done |
+| Settings **About**: hide entire block (quiz + MyOwnSafe Pro row) when `isPro` | ✅ Done |
+| `GoogleDriveSync`: gate uploads with store **`isPro`** (not raw settings) | ✅ Done |
+| `db/schema.ts`: Warranties **`ribbon-outline`** + migrate old **`shield-checkmark-outline`** | ✅ Done |
+| `CustomDrawerContent`: **`ribbon-outline`** in category icon picker | ✅ Done |
+| Limit / Pro-feature dialogs: quiz tertiary + modal gated with **`!isPro`** where applicable | ✅ Done |
+
+---
+
+## 5d. Android photo permissions, permissions info screen, and limited-access UX (2026)
+
+**Status:** Implemented.
+
+| Task | Status |
+|------|--------|
+| `androidPhotoPermission.ts`: `PermissionsAndroid` check/request for `READ_MEDIA_IMAGES` (API 33+) / `READ_EXTERNAL_STORAGE` (older) so UI matches system Settings | ✅ Done |
+| `requiredPermissions.ts`: `ensureMediaLibraryForImport()` and onboarding/file flows use native Android reads; iOS still uses ImagePicker | ✅ Done |
+| `app/permissions-info.tsx`: explain/request file access with same helpers; safe-area friendly layout | ✅ Done |
+| `services/photoAccessMode.ts`: `getPhotoLibraryAccessMode()` (`all` / `limited` / `none`) via Expo `accessPrivileges` | ✅ Done |
+| `app/capture.tsx` `handleImportImage`: before `launchImageLibraryAsync`, if mode is **limited**, show **one-time-per-visit** toast that the next screen is the OS asking which photos to add (Android + iOS partial library) | ✅ Done |
+
+---
+
 ## 5b. Optimization & Security Hardening (implemented)
 
 **Status:** Implemented.
@@ -178,11 +210,12 @@ Overview of plans, tasks, and completion status. See `.cursor/plans/` for full p
 ## 7. Current state (summary)
 
 - **App:** Vault – offline-first document/receipt archive (Expo SDK 54, React Native, Expo Router, TypeScript) — **Android only**.
-- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, vault lock (PIN), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall/quiz UX, privacy screen, toasts, **In-App Purchase** (RevenueCat + Google Play Billing), **App Locking** info guide.
+- **Done:** Categories, documents (images/PDF/Word/Excel/Other), capture + multi-file import, import-review with file list, tags, search/sort + file-type filters, selection mode + bulk actions, duplicate, move/delete/open/save, vault lock (PIN), notifications, PDF export, multi-page PDF (Pro), in-app PDF viewer, backup/restore, optional **Google Drive** copy after backup (OAuth + auto-upload toggle), **ML Kit** document scanner when native module is in the dev/production build (else camera), intro pricing + paywall UX, **persisted “Is Pro right for you?” quiz** (Free tier; cleared after Pro purchase), **`billingProEntitled` + optional __DEV__ `devProPreview`** for limits testing, Settings **About** hidden for Pro purchasers, **Warranties** category uses **ribbon** icon (not app shield), privacy screen, toasts, **In-App Purchase** (RevenueCat + Google Play Billing), **App Locking** info guide.
 - **Notes:** OCR (`expo-text-extractor` / dev build) may be unavailable in Expo Go; search still uses title/notes/tags and stored `ocr_text` when present. ML Kit requires a **native rebuild** with the Infinitered module linked; otherwise capture uses expo-camera only. Google Drive Connect requires valid OAuth client IDs in `app.json` extra and a build that includes **expo-crypto** (dependency of `expo-auth-session`; autolinks — do not declare as a config plugin).
 - **Notes (IAP):** RevenueCat SDK (`react-native-purchases`) integrated; `PaywallModal` triggers real purchases. Requires: (1) `revenueCatApiKey` in `app.json` extra, (2) Google Play product created, (3) native rebuild for billing permission.
 - **Notes (reliability/perf):** Drawer search is debounced, hot-path DB indexes + `EXISTS` reduce expensive search work, backup restore is hardened/sanitized, OCR polling uses a cancellable `setTimeout` loop, and multi-scan OCR enforces the quota trust boundary via internal pending OCR drafts.
 - **Notes (vault lock):** PIN-only; AppState minimize→resume with thresholds and `auth-flags` / `vaultLockPolicy`; capture screen and guarded shares/pickers avoid false locks. See §3b and `Plan.md/AGENTS.md`.
+- **Notes (photos / files):** Android gallery import uses **`ensureMediaLibraryForImport()`** aligned with **`PermissionsAndroid`**. **Limited** library grants can trigger an extra OS picker; **`capture`** shows a short explanatory toast once per visit. See §5d.
 - **Possible next:** OCR for user-imported PDFs, FTS5-based search acceleration, stricter backup/PDF memory limits, adaptive OCR polling/backoff, better PDF rendering, deeper AI-optional export UX, iOS parity (not a current target).
 
 ---

@@ -10,7 +10,8 @@ export async function getDb(): Promise<SQLite.SQLiteDatabase> {
 
 const DEFAULT_CATEGORIES = [
   { name: 'Receipts', icon_name: 'receipt-outline' },
-  { name: 'Warranties', icon_name: 'shield-checkmark-outline' },
+  /** Ribbon reads as certificate/guarantee — distinct from app branding (shield). */
+  { name: 'Warranties', icon_name: 'ribbon-outline' },
   { name: 'IDs & Passports', icon_name: 'card-outline' },
   { name: 'Contracts', icon_name: 'document-text-outline' },
 ];
@@ -105,10 +106,21 @@ export async function initDb(): Promise<void> {
     END;
   `);
 
-  // Populate FTS index from existing data (idempotent rebuild).
-  await database.execAsync(`
-    INSERT INTO documents_fts(documents_fts) VALUES('rebuild');
-  `);
+  // Rebuild FTS only when out of sync (e.g. first run after FTS migration). Triggers keep
+  // the index current afterward — a full rebuild every launch was O(n) and slowed cold start.
+  try {
+    const docCount = await database.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM documents');
+    const ftsCount = await database.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM documents_fts'
+    );
+    const dc = docCount?.c ?? 0;
+    const fc = ftsCount?.c ?? 0;
+    if (dc !== fc) {
+      await database.execAsync(`INSERT INTO documents_fts(documents_fts) VALUES('rebuild');`);
+    }
+  } catch {
+    // If FTS metadata is unavailable, skip — search falls back to LIKE
+  }
 
   // Safe migration: add notification_id column if it does not exist yet
   try {
@@ -135,5 +147,15 @@ export async function initDb(): Promise<void> {
         [cat.name, cat.icon_name]
       );
     }
+  }
+
+  // One-time style fix: Warranties used the same shield icon as app branding; migrate default only.
+  try {
+    await database.runAsync(
+      `UPDATE categories SET icon_name = ? WHERE name = 'Warranties' AND icon_name = 'shield-checkmark-outline'`,
+      ['ribbon-outline']
+    );
+  } catch {
+    /* ignore */
   }
 }
