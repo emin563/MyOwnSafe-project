@@ -1,4 +1,8 @@
 {
+  "terminal.integrated.env.windows": {
+    "ANDROID_HOME": "${env:LOCALAPPDATA}\\Android\\Sdk",
+    "ANDROID_SDK_ROOT": "${env:LOCALAPPDATA}\\Android\\Sdk"
+  },
   "typescript.tsserver.exclude": ["**/node_modules/**"],
   "editor.codeActionsOnSave": {
     "source.fixAll": "explicit",

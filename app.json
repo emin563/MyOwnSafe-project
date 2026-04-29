@@ -2,7 +2,7 @@
   "expo": {
     "name": "Vault - Document Archive",
     "slug": "PromptBlueprint",
-    "version": "1.0.0",
+    "version": "1.5.1",
     "orientation": "portrait",
     "runtimeVersion": {
       "policy": "appVersion"
@@ -23,6 +23,14 @@
       }
     },
     "android": {
+      "versionCode": 25,
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",
@@ -41,11 +49,11 @@
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/adaptive-icon.png"
       },
-      "edgeToEdgeEnabled": true,
+      "allowBackup": false,
+      "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES",
         "com.android.vending.BILLING"
       ],
       "package": "com.gundogdu.myownsafe"
@@ -94,7 +102,8 @@
         }
       ],
       "expo-secure-store",
-      "./plugins/withAndroidGoogleDriveOAuthIntent"
+      "./plugins/withAndroidGoogleDriveOAuthIntent",
+      "./plugins/withAndroidRemoveBroadMediaPermissions"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -108,8 +117,7 @@
       "googleDriveOAuth": {
         "androidClientId": "655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn.apps.googleusercontent.com",
         "webClientId": ""
-      },
-      "revenueCatApiKey": "goog_EspDccWEYuIIcTJnqcnagnmgUAz"
+      }
     }
   }
 }

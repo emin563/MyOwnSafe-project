@@ -1,33 +1,35 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  FlatList,
-  TouchableOpacity,
-  Modal,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import { useNavigation, DrawerActions } from '@react-navigation/native';
-import { router } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAppStore } from '@/store/app-store';
-import { useShallow } from 'zustand/react/shallow';
-import { getTagsForDocuments } from '@/db/tags';
-import { deleteFileFromArchive } from '@/services/StorageService';
-import { shareSelectedDocuments, type BackupProgress } from '@/services/BackupService';
-import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
-import {
-  resetBackupProgressThrottle,
-  shouldEmitBackupProgress,
-  type BackupProgressThrottleState,
-} from '@/services/backupProgressThrottle';
 import { DocumentCard } from '@/components/document/DocumentCard';
 import { BackupProgressModal, ConfirmModal, PaywallModal, QuizWhyPro } from '@/components/ui';
-import { getFreeLimit } from '@/services/limits';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
+import { getTagsForDocuments } from '@/db/tags';
 import type { Document, FileType, Tag } from '@/db/types';
+import {
+    resetBackupProgressThrottle,
+    shouldEmitBackupProgress,
+    type BackupProgressThrottleState,
+} from '@/services/backupProgressThrottle';
+import { shareSelectedDocuments, type BackupProgress } from '@/services/BackupService';
+import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
+import { getFreeLimit } from '@/services/limits';
+import { deleteFileFromArchive } from '@/services/StorageService';
+import { useAppStore } from '@/store/app-store';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { DrawerActions, useNavigation } from '@react-navigation/native';
+import * as Haptics from 'expo-haptics';
+import { router } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+    FlatList,
+    Modal,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useShallow } from 'zustand/react/shallow';
+
+const EMPTY_TAGS: Tag[] = [];
 
 export default function HomeScreen() {
   const navigation = useNavigation();
@@ -50,6 +52,7 @@ export default function HomeScreen() {
     clearSelection,
     removeDocument,
     editDocument,
+    duplicateDocument,
     tagDocuments,
     loadDocuments,
     loadDocumentsByTag,
@@ -75,6 +78,7 @@ export default function HomeScreen() {
       clearSelection: s.clearSelection,
       removeDocument: s.removeDocument,
       editDocument: s.editDocument,
+      duplicateDocument: s.duplicateDocument,
       tagDocuments: s.tagDocuments,
       loadDocuments: s.loadDocuments,
       loadDocumentsByTag: s.loadDocumentsByTag,
@@ -133,8 +137,11 @@ export default function HomeScreen() {
     };
   }, [visibleDocIdsSignature, documentTagLinksVersion]);
 
-  const selectedCategory = categories.find((c) => c.id === selectedCategoryId);
-  const selectedTag = tags.find((t) => t.id === selectedTagId);
+  const selectedCategory = useMemo(
+    () => categories.find((c) => c.id === selectedCategoryId),
+    [categories, selectedCategoryId]
+  );
+  const selectedTag = useMemo(() => tags.find((t) => t.id === selectedTagId), [tags, selectedTagId]);
 
   const displayedDocuments = useMemo(
     () => (fileTypeFilter === 'all' ? documents : documents.filter((d) => d.file_type === fileTypeFilter)),
@@ -157,9 +164,9 @@ export default function HomeScreen() {
     ? selectedCategory.name
     : 'All Documents';
 
-  const openDrawer = () => {
+  const openDrawer = useCallback(() => {
     navigation.dispatch(DrawerActions.openDrawer());
-  };
+  }, [navigation]);
 
   const handleCardLongPress = useCallback(
     (id: number) => {
@@ -176,15 +183,15 @@ export default function HomeScreen() {
     [isPro, selectionMode, setSelectionMode, toggleSelected]
   );
 
-  const handleClearSelection = () => {
+  const handleClearSelection = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     clearSelection();
-  };
+  }, [clearSelection]);
 
-  const handleSelectAll = () => {
+  const handleSelectAll = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     selectAll();
-  };
+  }, [selectAll]);
 
   const selectedDocuments = useMemo(
     () => documents.filter((d) => selectedIdSet.has(d.id)),
@@ -271,17 +278,39 @@ export default function HomeScreen() {
     ({ item }: { item: Document }) => (
       <DocumentCard
         document={item}
+        categories={categories}
         category={item.category_id != null ? categoriesById.get(item.category_id) ?? null : null}
-        tags={documentTagsMap[item.id] ?? []}
+        tags={documentTagsMap[item.id] ?? EMPTY_TAGS}
         selectionMode={selectionMode}
         isSelected={selectedIdSet.has(item.id)}
-        onLongPress={() => handleCardLongPress(item.id)}
-        onPressInSelectionMode={() => toggleSelected(item.id)}
+        onLongPressDocumentId={handleCardLongPress}
+        onPressInSelectionModeId={toggleSelected}
+        removeDocument={removeDocument}
+        editDocument={editDocument}
+        duplicateDocument={duplicateDocument}
+        showToast={showToast}
       />
     ),
-    [categoriesById, documentTagsMap, handleCardLongPress, selectionMode, selectedIdSet, toggleSelected]
+    [
+      categories,
+      categoriesById,
+      documentTagsMap,
+      duplicateDocument,
+      editDocument,
+      handleCardLongPress,
+      removeDocument,
+      selectionMode,
+      selectedIdSet,
+      showToast,
+      toggleSelected,
+    ]
   );
   const renderSeparator = useCallback(() => <View style={styles.separator} />, []);
+
+  const listEmpty = useMemo(
+    () => <EmptyState searchQuery={searchQuery} fileTypeFilter={fileTypeFilter} />,
+    [searchQuery, fileTypeFilter]
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -518,7 +547,12 @@ export default function HomeScreen() {
         renderItem={renderDocument}
         contentContainerStyle={styles.list}
         ItemSeparatorComponent={renderSeparator}
-        ListEmptyComponent={<EmptyState searchQuery={searchQuery} fileTypeFilter={fileTypeFilter} />}
+        ListEmptyComponent={listEmpty}
+        removeClippedSubviews
+        windowSize={7}
+        maxToRenderPerBatch={10}
+        initialNumToRender={12}
+        updateCellsBatchingPeriod={50}
       />
     </SafeAreaView>
   );

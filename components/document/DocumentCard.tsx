@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -13,52 +13,75 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Sharing from 'expo-sharing';
 import { router } from 'expo-router';
-import { useAppStore } from '@/store/app-store';
-import { useShallow } from 'zustand/react/shallow';
 import { withExternalActivityGuard } from '@/store/auth-flags';
 import { isAllowedShareSourceUri } from '@/services/archiveUri';
 import { deleteFileFromArchive } from '@/services/StorageService';
 import { ConfirmModal, UseAiWorkflowSheet } from '@/components/ui';
 import { Colors, Spacing, Typography, Radius } from '@/theme';
-import type { Category, Document, Tag } from '@/db/types';
+import type { Category, Document, FileType, Tag } from '@/db/types';
 
 type Props = {
   document: Document;
   category?: Category | null;
+  /** Full category list — used by the move-to-category sheet (no per-card store subscription). */
+  categories: Category[];
   tags?: Tag[];
   selectionMode?: boolean;
   isSelected?: boolean;
-  onLongPress?: () => void;
-  onPressInSelectionMode?: () => void;
+  onLongPressDocumentId?: (id: number) => void;
+  onPressInSelectionModeId?: (id: number) => void;
+  removeDocument: (id: number, options?: { skipReload?: boolean }) => Promise<void>;
+  editDocument: (
+    id: number,
+    title: string,
+    fileUri: string,
+    fileType: FileType,
+    categoryId: number | null,
+    purchasePrice: number | null,
+    expiryDate: string | null,
+    notes: string | null,
+    options?: { skipReload?: boolean }
+  ) => Promise<void>;
+  duplicateDocument: (id: number) => Promise<number>;
+  showToast: (message: string, type?: 'info' | 'success' | 'danger') => void;
 };
 
 const MAX_VISIBLE_TAGS = 3;
 
-export function DocumentCard({
+const EMPTY_TAGS: Tag[] = [];
+
+function DocumentCardInner({
   document,
   category,
-  tags = [],
+  categories,
+  tags = EMPTY_TAGS,
   selectionMode = false,
   isSelected = false,
-  onLongPress,
-  onPressInSelectionMode,
+  onLongPressDocumentId,
+  onPressInSelectionModeId,
+  removeDocument,
+  editDocument,
+  duplicateDocument,
+  showToast,
 }: Props) {
-  const { categories, removeDocument, editDocument, duplicateDocument, showToast } = useAppStore(
-    useShallow((s) => ({
-      categories: s.categories,
-      removeDocument: s.removeDocument,
-      editDocument: s.editDocument,
-      duplicateDocument: s.duplicateDocument,
-      showToast: s.showToast,
-    }))
-  );
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [moveModalVisible, setMoveModalVisible] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
 
-  const displayCategory = category ?? categories.find((c) => c.id === document.category_id) ?? null;
+  const displayCategory =
+    category ?? categories.find((c) => c.id === document.category_id) ?? null;
+
+  const docId = document.id;
+
+  const handleListLongPress = useCallback(() => {
+    onLongPressDocumentId?.(docId);
+  }, [onLongPressDocumentId, docId]);
+
+  const handleSelectionToggle = useCallback(() => {
+    onPressInSelectionModeId?.(docId);
+  }, [onPressInSelectionModeId, docId]);
   const isExpiringSoon = checkExpiringSoon(document.expiry_date);
   const isExpired = checkExpired(document.expiry_date);
 
@@ -121,15 +144,16 @@ export function DocumentCard({
   };
 
   const handlePress = () => {
-    if (selectionMode && onPressInSelectionMode) {
-      onPressInSelectionMode();
+    if (selectionMode) {
+      handleSelectionToggle();
       return;
     }
+    scaleAnim.stopAnimation();
     Animated.sequence([
       Animated.timing(scaleAnim, { toValue: 0.97, duration: 80, useNativeDriver: true }),
       Animated.timing(scaleAnim, { toValue: 1, duration: 80, useNativeDriver: true }),
     ]).start();
-    router.push(`/document/${document.id}`);
+    router.push(`/document/${docId}`);
   };
 
   return (
@@ -144,7 +168,7 @@ export function DocumentCard({
         <TouchableOpacity
           style={styles.content}
           onPress={handlePress}
-          onLongPress={onLongPress}
+          onLongPress={handleListLongPress}
           delayLongPress={400}
           activeOpacity={0.85}
         >
@@ -384,6 +408,8 @@ export function DocumentCard({
     </>
   );
 }
+
+export const DocumentCard = React.memo(DocumentCardInner);
 
 function formatDate(dateString: string): string {
   try {

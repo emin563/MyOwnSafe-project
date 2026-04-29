@@ -195,7 +195,12 @@ export default function PermissionsInfoScreen() {
                   <Text style={styles.badgeReqText}>Required</Text>
                 </View>
               </View>
-              <Text style={styles.rowHint}>Import photos and files you select; save exports.</Text>
+              <Text style={styles.rowHint}>
+                Import photos and files you select; save exports.
+                {Platform.OS === 'android' && typeof Platform.Version === 'number' && Platform.Version >= 33
+                  ? ' On Android 13+, the system photo picker is used (no broad access to your whole library).'
+                  : ''}
+              </Text>
               <Text style={styles.rowStatus}>Status: {statusLabel(media)}</Text>
               {media !== 'granted' ? (
                 <TouchableOpacity
@@ -282,8 +287,8 @@ export default function PermissionsInfoScreen() {
             </Text>
             <Text style={styles.moreParagraph}>
               <Text style={styles.moreBold}>Files &amp; photos — </Text>
-              Used when you import from your gallery or save exports. The system may offer while-in-use or one-time
-              access.
+              Used when you import from your gallery or save exports. On Android 13+, imports use the system photo
+              picker. On older Android versions the system may ask for storage access so you can pick files.
             </Text>
             <Text style={styles.moreParagraph}>
               <Text style={styles.moreBold}>Notifications — </Text>

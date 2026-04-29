@@ -1,8 +1,10 @@
+import { Platform } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import type { Document } from '@/db/types';
 import type { NotificationRequest } from 'expo-notifications';
 
 const DAYS_BEFORE_EXPIRY = 7;
+const MAX_NOTIFICATION_TITLE_LEN = 60;
 const NOTIFICATIONS_SUPPORTED =
   Constants.executionEnvironment !== ExecutionEnvironment.StoreClient;
 
@@ -29,6 +31,14 @@ export async function configureNotifications(): Promise<void> {
       shouldShowList: true,
     }),
   });
+
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('vault-expiry', {
+      name: 'Document expiry reminders',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+    });
+  }
 }
 
 export type NotificationPermissionStatus =
@@ -105,10 +115,15 @@ export async function scheduleExpiryNotification(
   // If the trigger would fire after expiry, skip it
   if (triggerDate >= expiryDate) return null;
 
+  const safeTitle =
+    doc.title.length > MAX_NOTIFICATION_TITLE_LEN
+      ? `${doc.title.slice(0, MAX_NOTIFICATION_TITLE_LEN)}…`
+      : doc.title;
+
   const notificationId = await Notifications.scheduleNotificationAsync({
     content: {
       title: 'Document Expiring Soon',
-      body: `"${doc.title}" expires on ${doc.expiry_date}. Tap to review.`,
+      body: `"${safeTitle}" expires on ${doc.expiry_date}. Tap to review.`,
       data: { documentId: doc.id },
     },
     trigger: {

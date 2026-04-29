@@ -2,7 +2,11 @@ import { Camera } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import type { MediaLibraryPermissionResponse } from 'expo-image-picker';
 import { Alert, InteractionManager, Platform } from 'react-native';
-import { getAndroidReadPhotosStatusForUi, requestAndroidReadPhotosPermission } from '@/services/androidPhotoPermission';
+import {
+  androidGalleryUsesSystemPhotoPicker,
+  getAndroidReadPhotosStatusForUi,
+  requestAndroidReadPhotosPermission,
+} from '@/services/androidPhotoPermission';
 
 /** Shown when camera access is denied or still needed for scanning. */
 export const CAMERA_REQUIRED_MESSAGE =
@@ -69,11 +73,15 @@ export async function requestRequiredVaultPermissionsWithNotices(): Promise<bool
 }
 
 /**
- * Ensures photo read permission before gallery import.
- * On Android, uses the same permission as system Settings (READ_MEDIA_IMAGES on API 33+), not only ImagePicker’s API.
+ * Ensures the app can import from the gallery before opening the picker.
+ * Android 13+: system Photo Picker — no READ_MEDIA_*; opens directly.
+ * Android 12 and below: may request READ_EXTERNAL_STORAGE once for legacy file access.
  */
 export async function ensureMediaLibraryForImport(): Promise<boolean> {
   if (Platform.OS === 'android') {
+    if (androidGalleryUsesSystemPhotoPicker()) {
+      return true;
+    }
     const status = await getAndroidReadPhotosStatusForUi();
     if (status === 'granted') return true;
     const ok = await requestAndroidReadPhotosPermission();

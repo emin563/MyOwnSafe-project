@@ -1,15 +1,15 @@
-import { useEffect } from 'react';
-import { Platform } from 'react-native';
-import { Stack } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import { initDb } from '@/db/schema';
-import { useAppStore } from '@/store/app-store';
-import { useShallow } from 'zustand/react/shallow';
+import { PrivacyWelcomeModal } from '@/components/onboarding/PrivacyWelcomeModal';
 import { Toast } from '@/components/ui';
 import { InputModal } from '@/components/ui/InputModal';
+import { initDb } from '@/db/schema';
 import { configureNotifications } from '@/services/NotificationService';
-import { PrivacyWelcomeModal } from '@/components/onboarding/PrivacyWelcomeModal';
 import { configureRevenueCat } from '@/services/PurchaseService';
+import { useAppStore } from '@/store/app-store';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
+import { Platform } from 'react-native';
+import { useShallow } from 'zustand/react/shallow';
 
 const FAST_STACK_MS = 280;
 const horizontalStackOptions =
@@ -66,7 +66,8 @@ export default function RootLayout() {
 
   return (
     <>
-      <StatusBar style="light" backgroundColor="transparent" translucent />
+      {/* Android 15 / edge-to-edge: backgroundColor & translucent are deprecated no-ops; use theme + safe area instead */}
+      <StatusBar style="light" />
       <Stack
         screenOptions={{
           headerShown: false,

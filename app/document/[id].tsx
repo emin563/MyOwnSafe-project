@@ -1,48 +1,47 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-  FlatList,
-  Modal,
-  ActivityIndicator,
-  Share,
-} from 'react-native';
-import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
-import * as Sharing from 'expo-sharing';
-import * as Clipboard from 'expo-clipboard';
-import { useLocalSearchParams, router } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAppStore } from '@/store/app-store';
-import { useShallow } from 'zustand/react/shallow';
-import { withExternalActivityGuard } from '@/store/auth-flags';
+import { LimitReachedDialog, PaywallModal, UseAiWorkflowSheet } from '@/components/ui';
+import { PREVIEW_COPY } from '@/constants/previewCopy';
 import { getDocumentById } from '@/db/documents';
 import { getTagsForDocument } from '@/db/tags';
-import { deleteFileFromArchive } from '@/services/StorageService';
+import type { Category, FileType, Tag } from '@/db/types';
 import { isAllowedShareSourceUri } from '@/services/archiveUri';
-import { exportDocumentAsPdf } from '@/services/PdfService';
-import { UseAiWorkflowSheet } from '@/components/ui';
-import { LimitReachedDialog, PaywallModal } from '@/components/ui';
 import { isLimitError } from '@/services/LimitError';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
-import { PREVIEW_COPY } from '@/constants/previewCopy';
 import { getOcrReadTrialsRemaining } from '@/services/limits';
 import {
-  isoToLocalDate,
-  localDateToIso,
-  parseExpiryDateInput,
+    isoToLocalDate,
+    localDateToIso,
+    parseExpiryDateInput,
 } from '@/services/parseExpiryDate';
-import type { Category, FileType, Tag } from '@/db/types';
+import { exportDocumentAsPdf } from '@/services/PdfService';
+import { deleteFileFromArchive } from '@/services/StorageService';
+import { useAppStore } from '@/store/app-store';
+import { withExternalActivityGuard } from '@/store/auth-flags';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
+import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useFocusEffect } from '@react-navigation/native';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
+import { router, useLocalSearchParams } from 'expo-router';
+import * as Sharing from 'expo-sharing';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    ScrollView,
+    Share,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useShallow } from 'zustand/react/shallow';
 
 /** Prepended when copying or sharing a page range for AI cleanup. */
 const OCR_REVIEW_PROMPT = 'Correct spelling errors and make it more organized.';
@@ -87,6 +86,7 @@ export default function DocumentEditorScreen() {
     loadTags,
     selectedCategoryId,
     addDocument,
+    loadDocuments,
     editDocument,
     removeDocument,
     duplicateDocument,
@@ -106,8 +106,9 @@ export default function DocumentEditorScreen() {
       tags: s.tags,
       loadTags: s.loadTags,
       selectedCategoryId: s.selectedCategoryId,
-      addDocument: s.addDocument,
-      editDocument: s.editDocument,
+    addDocument: s.addDocument,
+    loadDocuments: s.loadDocuments,
+    editDocument: s.editDocument,
       removeDocument: s.removeDocument,
       duplicateDocument: s.duplicateDocument,
       showToast: s.showToast,
@@ -146,6 +147,7 @@ export default function DocumentEditorScreen() {
   const [duplicating, setDuplicating] = useState(false);
   const [aiSheetVisible, setAiSheetVisible] = useState(false);
   const [limitVisible, setLimitVisible] = useState(false);
+  const [saveLimitVisible, setSaveLimitVisible] = useState(false);
   const [pendingNewTagName, setPendingNewTagName] = useState<string | null>(null);
   const [ocrPaywallVisible, setOcrPaywallVisible] = useState(false);
   const [busyText, setBusyText] = useState<string | null>(null);
@@ -530,6 +532,7 @@ export default function DocumentEditorScreen() {
           pendingOcrText?.fileUri === fileUri && pendingOcrText.fileType === fileType
             ? pendingOcrText.ocrText
             : undefined;
+        const willTagAfter = documentTags.length > 0;
         const newId = await addDocument(
           title.trim(),
           fileUri,
@@ -538,22 +541,31 @@ export default function DocumentEditorScreen() {
           price,
           expiry,
           notes.trim() || null,
-          preOcrText ? { preOcrText } : undefined
+          {
+            ...(preOcrText ? { preOcrText } : {}),
+            ...(willTagAfter ? { skipReload: true } : {}),
+          }
         );
-        // If tags were selected before saving, attach them now.
-        if (documentTags.length > 0) {
+        if (preOcrText) {
+          clearPendingOcrText();
+        }
+        if (willTagAfter) {
           for (const tag of documentTags) {
             await tagDocument(newId, tag.id);
           }
-        }
-        if (preOcrText) {
-          clearPendingOcrText();
+          await loadDocuments();
         }
       } else {
         await editDocument(Number(id), title.trim(), fileUri, fileType, categoryId, price, expiry, notes.trim() || null);
       }
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       leaveDocumentEditor();
+    } catch (e) {
+      if (isLimitError(e)) {
+        setSaveLimitVisible(true);
+        return;
+      }
+      throw e;
     } finally {
       setSaving(false);
       setBusyText(null);
@@ -1459,6 +1471,16 @@ export default function DocumentEditorScreen() {
           } catch {
             // ignore
           }
+        }}
+        onManage={() => router.replace('/(drawer)')}
+      />
+
+      <LimitReachedDialog
+        visible={saveLimitVisible}
+        kind="documents"
+        onClose={() => setSaveLimitVisible(false)}
+        onUpgrade={async () => {
+          setSaveLimitVisible(false);
         }}
         onManage={() => router.replace('/(drawer)')}
       />

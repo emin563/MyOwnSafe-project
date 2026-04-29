@@ -49,7 +49,7 @@ export function ProFeatureDialog({ visible, onClose, title, message, onUpgrade }
             </TouchableOpacity>
             <Text style={styles.tangible}>
               {isIntroEligible
-                ? '$8 intro for 7 days, then $10 (one-time). No recurring fees.'
+                ? '$8 one-time — about the price of a meal. No recurring fees.'
                 : 'One-time purchase. No subscription.'}
             </Text>
 

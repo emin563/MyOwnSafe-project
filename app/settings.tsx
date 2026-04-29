@@ -1,44 +1,43 @@
 import { GoogleDriveBackupSection } from '@/components/settings/GoogleDriveBackupSection';
 import { BackupProgressModal, PaywallModal, ProIncludedFeatureDialog, QuizWhyPro } from '@/components/ui';
-import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
-import { createBackup, restoreFromBackup, type BackupProgress } from '@/services/BackupService';
-import {
-  resetBackupProgressThrottle,
-  shouldEmitBackupProgress,
-  type BackupProgressThrottleState,
-} from '@/services/backupProgressThrottle';
-import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
-import { cancelAllNotifications } from '@/services/NotificationService';
-import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
-import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
-import { getPerformanceMetrics, resetPerformanceMetrics } from '@/services/performanceMetrics';
-import { getOcrMetrics, resetOcrMetrics } from '@/services/ocrMetrics';
-import {
-  getRegressionChecklist,
-  resetRegressionChecklist,
-  setRegressionCaseStatus,
-  type RegressionChecklist,
-  type RegressionCasePages,
-} from '@/services/regressionChecklist';
-import {
-  OCR_QA_CASES,
-  getOcrQaChecklist,
-  resetOcrQaChecklist,
-  setOcrQaCaseStatus,
-  type OcrQaChecklist,
-  type OcrQaCaseId,
-} from '@/services/ocrQaChecklist';
 import { GOOGLE_PRIVACY_MODAL_BODY, GOOGLE_PRIVACY_MODAL_TITLE } from '@/constants/googleServicesPrivacy';
 import { getSetting, setSetting } from '@/db/settings';
+import { createBackup, restoreFromBackup, type BackupProgress } from '@/services/BackupService';
+import { cancelAllNotifications } from '@/services/NotificationService';
+import {
+    resetBackupProgressThrottle,
+    shouldEmitBackupProgress,
+    type BackupProgressThrottleState,
+} from '@/services/backupProgressThrottle';
+import { estimateBackupTotalSeconds } from '@/services/backupTimeEstimate';
+import { FREE_TIER_RULES, PRO_ONLY_FEATURES } from '@/services/limits';
+import type { MlKitScannerMode } from '@/services/mlKitScannerMode';
+import { getOcrMetrics, resetOcrMetrics } from '@/services/ocrMetrics';
+import {
+    OCR_QA_CASES,
+    getOcrQaChecklist,
+    resetOcrQaChecklist,
+    setOcrQaCaseStatus,
+    type OcrQaCaseId,
+    type OcrQaChecklist,
+} from '@/services/ocrQaChecklist';
+import { getPerformanceMetrics, resetPerformanceMetrics } from '@/services/performanceMetrics';
+import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
+import {
+    getRegressionChecklist,
+    resetRegressionChecklist,
+    setRegressionCaseStatus,
+    type RegressionCasePages,
+    type RegressionChecklist,
+} from '@/services/regressionChecklist';
 import { useAppStore } from '@/store/app-store';
-import { useShallow } from 'zustand/react/shallow';
 import { withExternalActivityGuard } from '@/store/auth-flags';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
@@ -46,8 +45,8 @@ import {
     BackHandler,
     Modal,
     Platform,
-    Share,
     ScrollView,
+    Share,
     StyleSheet,
     Switch,
     Text,
@@ -55,6 +54,7 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useShallow } from 'zustand/react/shallow';
 
 type MetricsSummary = {
   label: string;

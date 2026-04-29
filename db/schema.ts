@@ -136,17 +136,27 @@ export async function initDb(): Promise<void> {
     // Column already exists from a previous run — silently skip
   }
 
+  try {
+    await database.execAsync(
+      'CREATE INDEX IF NOT EXISTS idx_documents_expiry_date ON documents(expiry_date);'
+    );
+  } catch {
+    /* ignore */
+  }
+
   // Seed default categories only on first run
   const existing = await database.getAllAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM categories'
   );
   if (existing[0]?.count === 0) {
-    for (const cat of DEFAULT_CATEGORIES) {
-      await database.runAsync(
-        'INSERT INTO categories (name, icon_name) VALUES (?, ?)',
-        [cat.name, cat.icon_name]
-      );
-    }
+    await database.withTransactionAsync(async () => {
+      for (const cat of DEFAULT_CATEGORIES) {
+        await database.runAsync('INSERT INTO categories (name, icon_name) VALUES (?, ?)', [
+          cat.name,
+          cat.icon_name,
+        ]);
+      }
+    });
   }
 
   // One-time style fix: Warranties used the same shield icon as app branding; migrate default only.

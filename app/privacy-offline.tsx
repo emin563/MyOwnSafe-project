@@ -1,15 +1,15 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Platform, StatusBar } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+    GOOGLE_PRIVACY_CHOICE,
+    GOOGLE_PRIVACY_DRIVE,
+    GOOGLE_PRIVACY_SCANNER,
+    GOOGLE_PRIVACY_SECTION_TITLE,
+} from '@/constants/googleServicesPrivacy';
+import { Colors, Radius, Spacing, Typography } from '@/theme';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Colors, Spacing, Typography, Radius } from '@/theme';
-import {
-  GOOGLE_PRIVACY_CHOICE,
-  GOOGLE_PRIVACY_DRIVE,
-  GOOGLE_PRIVACY_SCANNER,
-  GOOGLE_PRIVACY_SECTION_TITLE,
-} from '@/constants/googleServicesPrivacy';
+import React from 'react';
+import { Platform, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const FACTS = [
   {

@@ -1,5 +1,11 @@
 import * as ImagePicker from 'expo-image-picker';
 import type { MediaLibraryPermissionResponse } from 'expo-image-picker';
+import { Platform } from 'react-native';
+
+function androidApi(): number {
+  if (Platform.OS !== 'android') return 0;
+  return typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
+}
 
 const ACCESS_MODE_CACHE_TTL_MS = 5000;
 let accessModeCache: { mode: 'all' | 'limited' | 'none' | null; at: number } | null = null;
@@ -14,6 +20,11 @@ export async function getPhotoLibraryAccessMode(): Promise<'all' | 'limited' | '
   const now = Date.now();
   if (accessModeCache && now - accessModeCache.at < ACCESS_MODE_CACHE_TTL_MS) {
     return accessModeCache.mode;
+  }
+  // Android 13+ uses the system Photo Picker without broad media read; no "limited library" scope here.
+  if (Platform.OS === 'android' && androidApi() >= 33) {
+    accessModeCache = { mode: null, at: now };
+    return null;
   }
   const r = await ImagePicker.getMediaLibraryPermissionsAsync();
   const p = (r as MediaLibraryPermissionResponse).accessPrivileges;

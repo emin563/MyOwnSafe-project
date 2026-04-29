@@ -68,7 +68,7 @@ const PLUS_CATEGORIES: readonly PlusCategory[] = [
     title: 'Privacy & pricing',
     items: [
       'Your documents stay on your device for everyday use; no cloud required for the core vault.',
-      'We never see your data.',
+      'No ads, no trackers—your files stay on your phone; we don\'t see them and we don\'t send them anywhere.',
       'One-time payment—no subscriptions.',
     ],
   },
@@ -76,7 +76,6 @@ const PLUS_CATEGORIES: readonly PlusCategory[] = [
 
 export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) {
   const insets = useSafeAreaInsets();
-  const isIntroEligible = useAppStore((s) => s.isIntroEligible);
   const purchasePro = useAppStore((s) => s.purchasePro);
   const restorePro = useAppStore((s) => s.restorePro);
   const [loading, setLoading] = useState(false);
@@ -178,19 +177,10 @@ export function PaywallModal({ visible, onClose, onUpgrade, onRestore }: Props) 
           </View>
 
           <View style={styles.priceBox}>
-            {isIntroEligible ? (
-              <>
-                <Text style={styles.priceNormal}>$10 — one-time payment</Text>
-                <Text style={styles.priceIntroHighlight}>For 7 days just $8</Text>
-                <Text style={styles.priceTangible}>About the price of a lunch — one-time, no subscription.</Text>
-              </>
-            ) : (
-              <>
-                <Text style={styles.priceText}>$10 — one-time payment</Text>
-                <Text style={styles.priceFinePrint}>No subscriptions, ever.</Text>
-                <Text style={styles.priceTangible}>About the price of a lunch — one-time, no subscription.</Text>
-              </>
-            )}
+            <Text style={styles.priceHero}>$8</Text>
+            <Text style={styles.priceHeroSub}>
+              One-time payment — about the price of a meal.
+            </Text>
           </View>
 
           <Pressable
@@ -314,33 +304,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.base,
   },
-  priceNormal: {
-    color: Colors.textSecondary,
-    fontSize: Typography.fontSizeSm,
-    marginBottom: Spacing.xs,
-  },
-  priceIntroHighlight: {
+  priceHero: {
     color: Colors.primary,
-    fontSize: Typography.fontSizeLg,
+    fontSize: 48,
     fontWeight: Typography.fontWeightBold,
-    marginTop: Spacing.xs,
+    letterSpacing: -1,
+    marginBottom: Spacing.sm,
   },
-  priceText: {
-    color: Colors.text,
-    fontSize: Typography.fontSizeBase,
+  priceHeroSub: {
+    color: Colors.textSecondary,
+    fontSize: Typography.fontSizeMd,
     fontWeight: Typography.fontWeightMedium,
-  },
-  priceFinePrint: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    marginTop: 4,
     textAlign: 'center',
-  },
-  priceTangible: {
-    color: Colors.textMuted,
-    fontSize: Typography.fontSizeXs,
-    marginTop: Spacing.sm,
-    textAlign: 'center',
+    lineHeight: 24,
+    paddingHorizontal: Spacing.sm,
   },
   upgradeBtn: {
     backgroundColor: Colors.primary,

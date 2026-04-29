@@ -15,12 +15,12 @@ import {
 } from '@/services/ocrLanguages';
 import { recordOcrPageMetric } from '@/services/ocrMetrics';
 import { recordPerformanceMetric } from '@/services/performanceMetrics';
-import {
-  CAMERA_REQUIRED_MESSAGE,
-  ensureMediaLibraryForImport,
-} from '@/services/requiredPermissions';
 import { MULTI_PAGE_TESTED_LIMIT } from '@/services/performanceTargets';
 import { getPhotoLibraryAccessMode } from '@/services/photoAccessMode';
+import {
+    CAMERA_REQUIRED_MESSAGE,
+    ensureMediaLibraryForImport,
+} from '@/services/requiredPermissions';
 import { useAppStore } from '@/store/app-store';
 import { authFlags } from '@/store/auth-flags';
 import { Colors, Radius, Spacing, Typography } from '@/theme';
@@ -820,6 +820,7 @@ export default function CaptureScreen() {
         quality: 0.9,
         allowsEditing: false,
         allowsMultipleSelection: true,
+        legacy: false,
       });
       if (result.canceled || !result.assets?.length) return;
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

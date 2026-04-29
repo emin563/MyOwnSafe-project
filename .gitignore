@@ -5,6 +5,7 @@ node_modules/
 
 # Expo
 .expo/
+.expo-ascii-sdk/
 dist/
 web-build/
 expo-env.d.ts
@@ -13,6 +14,10 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
+*.keystore
+
+# Android release signing (passwords — never commit)
+android/keystore.properties
 *.p8
 *.p12
 *.key
@@ -30,8 +35,13 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# Secrets — never commit (tracked exception: .env.example only)
+.env*
+!.env.example
+
+# EAS credentials export (passwords + keystore paths) — never commit
+credentials.json
+credentials/
 
 # typescript
 *.tsbuildinfo

@@ -289,9 +289,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSelectedCategoryId: (id) => set({ selectedCategoryId: id, selectedTagId: null }),
   setSelectedTagId: (id) => set({ selectedTagId: id, selectedCategoryId: null }),
   setSortBy: (sortBy) => {
-    set({ sortBy });
     const { documents } = get();
-    set({ documents: sortDocumentsBy(documents, sortBy) });
+    set({ sortBy, documents: sortDocumentsBy(documents, sortBy) });
   },
 
   setSelectionMode: (on) => set({ selectionMode: on, selectedIds: on ? [] : [] }),
@@ -603,15 +602,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   removeCategory: async (id) => {
     await deleteCategory(id);
-    const { selectedCategoryId } = get();
-    if (selectedCategoryId === id) {
+    if (get().selectedCategoryId === id) {
       set({ selectedCategoryId: null });
     }
-    await get().loadCategories();
-    await get().loadDocuments(get().selectedCategoryId);
+    await Promise.all([get().loadCategories(), get().loadDocuments(get().selectedCategoryId)]);
   },
 
   loadDocuments: async (categoryId) => {
+    // When the argument is omitted, refresh the current home view: tag filter takes precedence
+    // over category (add/edit/duplicate all call `loadDocuments()` with no args).
+    if (categoryId === undefined) {
+      const tagId = get().selectedTagId;
+      if (tagId != null) {
+        return get().loadDocumentsByTag(tagId);
+      }
+    }
     const id = categoryId !== undefined ? categoryId : get().selectedCategoryId;
     const list = await getDocuments(id);
     const sorted = sortDocumentsBy(list, get().sortBy);

@@ -1,175 +1,437 @@
-﻿### SECURITY AUDIT: Vault - Document Archive (Full Scan + Fixes Applied)
-**Date:** 2026-04-09 (hardening pass: 2026-04-13)
-**Risk Assessment:** Low-Medium
-**Security Score:** 86 / 100
+﻿# SECURITY AUDIT — Vault: Document Archive
+
+**Date:** 2026-04-18 (full scan + fixes)
+**Auditor:** Automated static analysis — every `services/`, `store/`, `db/`, `config/`, `app/`, and `components/` file reviewed
+**Risk Assessment:** Low
+**Security Score:** 90 / 100
 
 ---
 
 ## Executive Summary
 
-- The previously reported high findings were implemented in code during this task.
-- **2026-04-13:** Share / AI egress and Google Drive uploads were tightened with shared URI rules and serialized Drive document uploads (see **M5**, **M6**).
-- Current posture has no confirmed critical findings and fewer practical attack paths.
-- Remaining risks are mostly policy/architecture choices (at-rest encryption and no in-app secondary lock).
+Vault is a local-first document archive for Android (React Native / Expo). Documents, metadata, and OCR text live in an on-device SQLite database with files in an app-sandbox `archive/` directory. Optional features (Google Drive backup, "Share to AI", OS sharing, OTA updates) create controlled egress points. In-app purchases are handled by RevenueCat.
+
+**Strengths:**
+- All SQL uses parameterized queries — no string-built SQL from user input.
+- File-path validation (`archiveUri.ts`, `StorageService.ts`) blocks `..` traversal before share, preview, Drive upload, and delete.
+- Backup restore uses staging + rollback + transaction; limits on zip size, manifest size, entry count, filename length, and reserved names.
+- Office preview (Word/Excel) has DoS guards: max file size, max archive entries, max uncompressed bytes, max XML part size.
+- HTML in PDF export is escaped via `escapeHtml()` on every user-interpolated field.
+- OAuth tokens stored in `expo-secure-store` (Android Keystore); SQLite fallback only in `__DEV__` / Expo Go.
+- Google Drive uploads validate sandbox boundaries and serialize per-document uploads.
+- Expo Updates OTA channel is pointed at the Expo-hosted service with `runtimeVersion` pinning.
+- `RECORD_AUDIO` is explicitly removed (`tools:node="remove"` in manifest).
+- Camera plugin configured with `recordAudioAndroid: false`.
+
+**Residual risks** are primarily architectural choices (no at-rest encryption, no in-app secondary lock).
+
+**Fixes applied (2026-04-18):**
+- Stripped legacy `READ/WRITE_EXTERNAL_STORAGE` + `SYSTEM_ALERT_WINDOW` from merged manifest via expanded Expo config plugin.
+- Disabled `android:allowBackup` to prevent ADB data extraction.
+- Set notification channel to `VISIBILITY_PRIVATE` so document titles are hidden on the lock screen.
+- Truncated document titles in notification body to 60 chars.
 
 ---
 
-## Implemented Fixes (This Task)
+## 1. Authentication, Billing & Entitlements
 
-### H1 - Fixed: Office preview DoS hardening
-* **Files:** `services/offlinePreview.ts`
-* **Changes:**
-  - Added strict max file-size checks before Base64 load for Office previews.
-  - Added ZIP entry-count and total-uncompressed-size guards.
-  - Added XML part-size and text-length caps before parsing.
-* **Result:** Crafted oversized `.docx/.xlsx` payloads are rejected instead of fully parsed in memory.
+### 1.1 RevenueCat SDK (`PurchaseService.ts`, `config/revenueCat.ts`)
 
-### H2 - Fixed: Drive token storage fail-closed in production
-* **Files:** `services/GoogleDriveSync.ts`
-* **Changes:**
-  - SQLite token fallback is now limited to dev/Expo Go scenarios.
-  - Production behavior now fails closed if secure storage is unavailable.
-* **Result:** Token-at-rest exposure risk is reduced on production builds.
+| Check | Status |
+|-------|--------|
+| API key loaded from env, not hardcoded in source | **OK** — `app.config.ts` reads `REVENUECAT_API_KEY` from env via `@expo/env`; `.env` is gitignored |
+| Placeholder guard before `Purchases.configure` | **OK** — `isRevenueCatApiKeyPlaceholder()` returns early |
+| Entitlement sync tolerates network failure gracefully | **OK** — `syncProEntitlementFromRevenueCat` returns `'unknown'`; store keeps last persisted value (does not revoke) |
+| Bidirectional sync (revoke on refund) | **OK** — `loadSettings` fires async `syncProEntitlementFromRevenueCat`; `'not_entitled'` writes `false` to `proBillingEntitled` |
+| Dev preview cannot leak into production | **OK** — `setDevProPreview` is gated by `__DEV__`; `loadSettings` sets `devProPreview = null` when `!__DEV__` |
+| `BILLING` permission declared | **OK** — `app.json` and merged manifest |
 
-### H3 - Fixed: Safer backup restore with staging and rollback
-* **Files:** `services/BackupService.ts`
-* **Changes:**
-  - Added staging directory for extracted backup files.
-  - Added archive swap strategy (`live -> rollback`, `stage -> live`) with rollback recovery path.
-  - Added cleanup logic for stage/rollback directories.
-* **Result:** Corrupt or partial restores are less likely to destroy existing archive data.
+**Finding — Low / Informational:**
+- **L1. `goog_` public SDK key in `app.json`** (line 109, `extra.googleDriveOAuth.androidClientId`): This is an OAuth **client ID**, not a secret. Acceptable for Android native apps using PKCE. The RevenueCat key (`goog_…`) is loaded from env and not committed. No action needed.
 
-### M3 - Fixed: URI allowlist for in-app preview
-* **Files:** `app/file-preview.tsx`
-* **Changes:**
-  - Added explicit archive-path allowlist validation for preview/open flows.
-  - Blocked open-in-app action when URI is outside allowed bounds.
-* **Result:** Reduced local path abuse/deep-link risk in preview route handling.
+### 1.2 Google OAuth (`GoogleDriveSync.ts`, `config/googleDrive.ts`, OAuth redirect routes)
 
-### M4 - Fixed: Removed broad legacy storage permissions
-* **Files:** `app.json`
-* **Changes:**
-  - Removed `android.permission.READ_EXTERNAL_STORAGE`
-  - Removed `android.permission.WRITE_EXTERNAL_STORAGE`
-* **Result:** Smaller Android permission surface.
+| Check | Status |
+|-------|--------|
+| PKCE flow via `expo-auth-session` | **OK** — Android-only, uses `authorizationEndpoint` / `tokenEndpoint`; code verifier generated by library |
+| OAuth client ID is the Android native type | **OK** — Public, acceptable |
+| Redirect URI matches intent-filter in manifest | **OK** — `com.googleusercontent.apps.655…` scheme registered |
+| Token refresh uses `tokenEndpoint` (server-side) | **OK** — `GOOGLE_TOKEN_DISCOVERY.tokenEndpoint` is the Google endpoint |
+| Redirect landing routes do not leak tokens | **OK** — `oauthredirect.tsx` / `oauth2redirect.tsx` call `WebBrowser.maybeCompleteAuthSession()` then navigate to `/settings` |
+| Custom schemes limited to expected set | **OK** — `promptblueprint`, `com.gundogdu.myownsafe`, reverse-client-id |
 
-### Post-audit (2026-04): Scoped photo reads + limited-access behavior
-* **Context:** `app.json` Android `permissions` now targets **scoped** photo access (e.g. **`READ_MEDIA_IMAGES`**) plus camera and billing. The **merged** `AndroidManifest.xml` from dependencies may still list legacy storage entries; **runtime** permission checks in **`services/androidPhotoPermission.ts`** / **`ensureMediaLibraryForImport()`** use the API-appropriate read permission so behavior matches **Settings → Permissions**.
-* **Limited library access:** On Android 14+ and iOS 14+, users can grant **partial** photo access. The OS may show an **additional** picker to choose photos — this is **expected** and does **not** bypass consent; vault import only receives what the user selects. **`app/capture.tsx`** surfaces a short in-app explanation (toast) when limited access is detected to reduce confusion.
+### 1.3 Free-tier limit enforcement (`limits.ts`, `app-store.ts`)
 
-### M5 - Fixed: Share / AI workflow and PDF export — URI allowlist (defense in depth)
-* **Files:** `services/archiveUri.ts` (new), `app/file-preview.tsx`, `components/ui/AiDestinationSheet.tsx`, `components/document/DocumentCard.tsx`, `app/document/[id].tsx`, `services/PdfService.ts`
-* **Changes:**
-  - Centralized **`isAllowedArchiveFileUri`** (vault `archive/` only) and **`isAllowedShareSourceUri`** (app document + cache paths, or OS `content://` pickers), with `..` path traversal rejected.
-  - **`expo-sharing`** is only invoked when the URI passes these checks; otherwise the user sees a short toast.
-  - **`exportDocumentAsPdf`** shares the generated PDF only if it remains under app sandbox paths.
-* **Result:** A poisoned `file_uri` in SQLite or a bad deep link is far less likely to exfiltrate arbitrary local files through in-app share or “Share to AI”.
-
-### M6 - Fixed: Google Drive uploads — sandbox gate, archive-only documents, serialized queue
-* **Files:** `services/GoogleDriveSync.ts` (uses `services/archiveUri.ts`)
-* **Changes:**
-  - **`uploadLocalFileToVaultFolder`** refuses paths outside app document/cache directories.
-  - **`maybeUploadVaultDocumentToGoogleDrive`** proceeds only if **`isAllowedArchiveFileUri`** (vault files), then enqueues work on a **serial** promise queue so bulk saves do not open many parallel upload sessions.
-  - **Backup zip** upload requires a **`.zip`** under sandbox paths; **`uploadAllVaultDocumentsToGoogleDriveNow`** skips rows whose `file_uri` is not under the archive.
-* **Result:** Drive egress is limited to expected sandbox locations; burst imports are gentler on the network stack and Google API.
+| Check | Status |
+|-------|--------|
+| Document limit checked before `createDocument` | **OK** — `addDocument` checks `getTotalFileCount()` |
+| Category limit checked (minus seeded defaults) | **OK** — `addCategory` subtracts `SEEDED_DEFAULT_CATEGORIES` |
+| Tag limit checked | **OK** — `addTag`, `getOrCreateTag` both check `getTotalTagCount()` |
+| OCR free trial quota uses server-of-record in SQLite | **OK** — `ocrReadTrialsUsed` persisted in `settings`; `_ocrTrialLock` prevents concurrent double-spend; weekly bonus grows allowance |
+| `resetOcrReadTrialsForDev` gated by `__DEV__` | **OK** |
 
 ---
 
-## Current Findings (Post-Fix)
+## 2. Data Storage
+
+### 2.1 SQLite database (`db/schema.ts`, `db/documents.ts`, `db/settings.ts`)
+
+| Check | Status |
+|-------|--------|
+| WAL mode enabled | **OK** |
+| Foreign keys enabled | **OK** |
+| All queries use parameterized `?` placeholders | **OK** — every CRUD function in `documents.ts`, `categories.ts`, `tags.ts`, `settings.ts` uses bind params |
+| FTS5 MATCH expression sanitized | **OK** — `buildFtsMatchExpr` strips `['"*(){}[\]^~!@#$%&|\\:;,.?/<>+=]` before building tokens; each token wrapped in `"token"*` |
+| LIKE search escapes `%`, `_`, `\` | **OK** — `searchDocuments` uses `ESCAPE '\\'` |
+| Input length capped at DB layer | **OK** — `createDocument` / `updateDocument`: title → 500, notes → 50,000, expiry → regex `^\d{4}-\d{2}-\d{2}$` |
+| Batch SQL (tags, settings) uses bound params | **OK** — `addTagsToDocument`, `addTagToDocuments`, `getSettings` all use `?` placeholders |
+| DB name is static (`docarchive.db`) | **OK** — no user-controlled path |
+
+**Finding — Medium (accepted):**
+- **M1. Vault data unencrypted at rest.** SQLite and archive files are stored in the app's private sandbox (`documentDirectory`). On a rooted device or via ADB backup, data is readable. **Mitigation:** Android's file-based encryption (FBE) on modern devices; app-level encryption would require an additional layer (e.g., SQLCipher).
+
+### 2.2 Secure storage (`GoogleDriveSync.ts` → `expo-secure-store`)
+
+| Check | Status |
+|-------|--------|
+| Tokens written to Keystore via `expo-secure-store` | **OK** — `vaultStorageSet` uses `ss.setItemAsync` |
+| SQLite fallback only in dev/Expo Go | **OK** — `allowSqliteTokenFallback()` returns `__DEV__ \|\| ExecutionEnvironment.StoreClient` |
+| Production fails closed if Keystore unavailable | **OK** — `vaultStorageGet` returns `null`; `vaultStorageSet` throws |
+| Token cleared on disconnect | **OK** — `clearGoogleDriveConnection` → `clearAllDriveStorageKeys` cleans both Keystore + SQLite fallback keys |
+
+### 2.3 File system (`StorageService.ts`, `archiveUri.ts`)
+
+| Check | Status |
+|-------|--------|
+| Filename sanitization | **OK** — `sanitizeFilename` strips `[<>:"/\\|?*\x00-\x1F]`, collapses `..`, caps length at 120 |
+| `isInsideArchive` blocks `..` | **OK** — checks `startsWith(archiveUri)` + no `..` in remainder |
+| Central URI validators (`archiveUri.ts`) | **OK** — `isAllowedArchiveFileUri`, `isUriUnderAppSandboxDirectories`, `isAllowedShareSourceUri` — all normalize `\` → `/`, reject `..` |
+| Delete gated by archive check | **OK** — `deleteFileFromArchive` returns early if `!isInsideArchive` |
+
+### 2.4 Settings as key-value (`db/settings.ts`)
+
+| Check | Status |
+|-------|--------|
+| Keys are app-controlled literals in `loadSettings` | **OK** — hardcoded array of string literals |
+| No user-controlled keys in `setSetting` calls | **OK** — all callers use constant keys |
+
+---
+
+## 3. Network Egress & External Communication
+
+### 3.1 Google Drive API (`GoogleDriveSync.ts`)
+
+| Check | Status |
+|-------|--------|
+| Scope is `drive.file` (minimal) | **OK** — only accesses files created by the app |
+| Upload validates file is under app sandbox | **OK** — `uploadLocalFileToVaultFolder` calls `isUriUnderAppSandboxDirectories`; rejects otherwise |
+| Per-document upload validates archive path | **OK** — `maybeUploadVaultDocumentToGoogleDrive` checks `isAllowedArchiveFileUri` |
+| Bulk upload (`uploadAllVaultDocumentsToGoogleDriveNow`) skips non-archive URIs | **OK** |
+| Backup zip upload requires `.zip` extension + sandbox | **OK** — both `uploadVaultBackupZipToGoogleDrive` and `maybeUploadVaultBackupToGoogleDrive` check |
+| Uploads serialized (no burst) | **OK** — `driveDocumentUploadQueue` serializes per-document uploads |
+| Error messages truncated before toast | **OK** — `.slice(0, 200)` / `.slice(0, 137)` |
+| `displayFileName` sanitized | **OK** — `driveDocumentDisplayName` strips `[<>:"/\\|?*\x00-\x1F]`, collapses whitespace, caps at 80 |
+
+### 3.2 Sharing & AI workflow
+
+| Check | Status |
+|-------|--------|
+| Share URIs validated before `Sharing.shareAsync` | **OK** — `AiDestinationSheet`, `DocumentCard`, `document/[id].tsx` all call `isAllowedShareSourceUri` |
+| PDF export share validates sandbox | **OK** — `PdfService.ts` checks `isUriUnderAppSandboxDirectories(pdfUri)` |
+| AI deep links are static allowlist | **OK** — `AiDestinations.ts` hardcodes `chatgpt://`, `gemini://`, `claude://`, `copilot://` |
+| Privacy disclaimer before AI share | **OK** — `AiDestinationSheet` shows privacy note; "don't show again" persisted in `settings` |
+| Sharing serialized (no double-open on Android) | **OK** — `sharingSerialized.ts` chains calls |
+| `withExternalActivityGuard` wraps external calls | **OK** — guards picker/share overlap |
+
+### 3.3 OTA Updates (Expo Updates)
+
+| Check | Status |
+|-------|--------|
+| Update URL points to Expo | **OK** — `https://u.expo.dev/272a3754-…` in `app.json` and manifest |
+| Runtime version pinned | **OK** — `runtimeVersion.policy: "appVersion"` |
+| Check on launch | Manifest shows `EXPO_UPDATES_CHECK_ON_LAUNCH: ALWAYS` |
+
+**Finding — Low / Informational:**
+- **L2. OTA supply chain risk.** Expo Updates downloads JS bundles from `u.expo.dev`. If the EAS account were compromised, a malicious OTA could be pushed. **Mitigation:** EAS access controls, 2FA on Expo account, runtime version pinning prevents cross-version injection.
+
+### 3.4 Notifications (`NotificationService.ts`)
+
+| Check | Status |
+|-------|--------|
+| Local-only (no push server) | **OK** — `expo-notifications` local scheduling only |
+| Notification content uses `doc.title` | **Fixed** — title truncated to 60 chars to limit lock-screen exposure |
+| Lock-screen visibility | **Fixed** — `vault-expiry` channel set to `VISIBILITY_PRIVATE`; content hidden on lock screen |
+| No sensitive document content in notification | **OK** — title and date only |
+| Permission requested before scheduling | **OK** — `scheduleExpiryNotification` checks and requests |
+
+---
+
+## 4. Input Validation & Injection
+
+### 4.1 SQL injection
+
+**All queries use parameterized statements.** No string concatenation of user input into SQL. The dynamic `IN (?,?,?)` patterns in `getSettings`, `addTagsToDocument`, `addTagToDocuments`, `getTagsForDocuments`, and `searchDocuments` build placeholder strings from array lengths (not values), then bind the values.
+
+### 4.2 HTML injection (PDF export)
+
+`PdfService.ts` defines `escapeHtml()` (replaces `& < > " '`) and applies it to every user field interpolated into the HTML template: `doc.title`, `doc.purchase_price`, `doc.expiry_date`, `categoryName`, `doc.notes`, `doc.created_at`, `doc.updated_at`. **No unescaped user content.**
+
+### 4.3 Filename sanitization
+
+| Location | Method |
+|----------|--------|
+| `StorageService.ts` | `sanitizeFilename`: strips path, removes `[<>:"/\\|?*\x00-\x1F]`, collapses `..`, caps at 120 |
+| `BackupService.ts` | `toSafeFilename`: rejects `..`, `/`, `\`, length > 120, reserved names (CON, PRN, etc.), uses `SAFE_FILENAME_RE` |
+| `GoogleDriveSync.ts` | `driveDocumentDisplayName`: strips same chars, collapses whitespace, caps at 80 |
+
+### 4.4 Backup restore validation (`BackupService.ts`)
+
+| Limit | Value |
+|-------|-------|
+| Max zip size | 50 MiB |
+| Max manifest size | 2 MiB |
+| Max categories | 200 |
+| Max documents | 5,000 |
+| Max archive entries | 20,000 |
+| Max filename length | 120 |
+| Individual file size check | 30 MiB (per zip entry uncompressed size) |
+| Reserved filenames | Windows reserved set |
+| File type whitelist | `image, pdf, word, excel, document` |
+| Atomic DB restore | `withTransactionAsync` — rolls back on error |
+| Archive swap | staging → swap → rollback on failure |
+| Category ID integrity | `restoredCategoryIds` set; foreign key validated before INSERT |
+
+### 4.5 Office preview DoS limits (`offlinePreview.ts`)
+
+| Limit | Value |
+|-------|-------|
+| Max office file size | 20 MiB |
+| Max archive entries | 4,000 |
+| Max uncompressed size | 80 MiB |
+| Max XML part size | 8 MiB |
+| Max XML text chars | 4,000,000 |
+| Max preview text | 400,000 chars |
+| Max plain-text bytes | 1,500,000 |
+
+### 4.6 FTS5 search expression
+
+`buildFtsMatchExpr` strips all special characters (`['"*(){}[\]^~!@#$%&|\\:;,.?/<>+=]`), splits on whitespace, wraps each token in `"token"*`, joins with `AND`. This prevents FTS5 syntax injection (e.g., `NEAR`, `NOT`, column filters). The `{title notes}` column filter is a static string.
+
+---
+
+## 5. Permissions & Platform Surface
+
+### 5.1 Declared Android permissions (`app.json` + merged manifest)
+
+| Permission | Source | Status |
+|------------|--------|--------|
+| `CAMERA` | Declared in `app.json` | **OK** — required for document scanning |
+| `BILLING` | Declared in `app.json` | **OK** — required for in-app purchase |
+| `READ_MEDIA_IMAGES` | Injected by `expo-image-picker` plugin | **OK** — scoped media access for Android 13+ |
+| `INTERNET` | Expo default | **OK** — required for Drive, RevenueCat, OTA |
+| `ACCESS_NETWORK_STATE` | Expo default | **OK** |
+| `VIBRATE` | Expo notifications | **OK** |
+| `SYSTEM_ALERT_WINDOW` | Expo dev client | **Fixed** — removed via `tools:node="remove"` in config plugin |
+| `DOWNLOAD_WITHOUT_NOTIFICATION` | Expo updates | **OK** |
+| `RECORD_AUDIO` | **Removed** via `tools:node="remove"` | **OK** |
+| `READ_EXTERNAL_STORAGE` | Dependency-injected (legacy) | **Fixed** — removed via `tools:node="remove"` in config plugin |
+| `WRITE_EXTERNAL_STORAGE` | Dependency-injected (legacy) | **Fixed** — removed via `tools:node="remove"` in config plugin |
+
+**Finding L3 — Fixed:**
+- Legacy `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, and `SYSTEM_ALERT_WINDOW` are now explicitly stripped from the merged manifest via the expanded `withAndroidRemoveBroadMediaPermissions` config plugin (`tools:node="remove"`).
+
+### 5.2 Runtime permission handling
+
+| Permission | Handler |
+|------------|---------|
+| Camera | `requiredPermissions.ts` → `Camera.requestCameraPermissionsAsync()` |
+| Photo library | `requiredPermissions.ts` → `ImagePicker.requestMediaLibraryPermissionsAsync()`; falls back to `androidPhotoPermission.ts` for API-appropriate read permission |
+| Limited photo access | `photoAccessMode.ts` detects `limited` access; `capture.tsx` shows informational toast |
+| Notifications | `NotificationService.ts` → `requestPermissionsAsync()` |
+
+### 5.3 iOS info.plist
+
+`NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`, `NSPhotoLibraryAddUsageDescription` are all set with descriptive strings.
+
+---
+
+## 6. URI & Deep-Link Attack Surface
+
+### 6.1 Custom URI schemes
+
+The app registers `promptblueprint://`, `com.gundogdu.myownsafe://`, `exp+promptblueprint://`, and `com.googleusercontent.apps.655…://` as intent-filter schemes.
+
+| Route | Handled by | Risk |
+|-------|------------|------|
+| `*/oauthredirect` | `oauthredirect.tsx` → `OAuthDeepLinkLanding` → `maybeCompleteAuthSession()` → navigate to `/settings` | **Low** — no token extraction from URL in our code; handled by `expo-auth-session` |
+| `*/oauth2redirect` | Same as above | **Low** |
+| Other deep links | Expo Router file-based routing; unmatched routes show 404 | **OK** |
+
+### 6.2 File preview URI validation (`file-preview.tsx`)
+
+The preview route receives `uri` as a search param, decodes it, then validates with `isAllowedArchiveFileUri()`. If the URI fails validation, preview content is not loaded and "Open in another app" is blocked. **Traversal and non-archive paths rejected.**
+
+### 6.3 Document editor URI
+
+`document/[id].tsx` receives `fileUri` from navigation params. Sharing and AI share are gated by `isAllowedShareSourceUri`. Delete is gated by `deleteFileFromArchive` → `isInsideArchive`. The `fileUri` for new documents comes from `saveFileToArchive` (which sanitizes filenames and writes under `archive/`).
+
+---
+
+## 7. Third-Party Dependencies
+
+### 7.1 npm audit
+
+```
+$ npm audit --omit=dev
+found 0 vulnerabilities
+```
+
+### 7.2 Key dependencies and risk
+
+| Package | Purpose | Risk notes |
+|---------|---------|------------|
+| `react-native-purchases` | RevenueCat SDK | Trusted, widely used |
+| `expo-auth-session` | OAuth2 PKCE | Expo maintained |
+| `expo-secure-store` | Keystore/Keychain | Expo maintained |
+| `expo-sqlite` | Local database | Expo maintained |
+| `jszip` | Backup zip create/parse; Office preview unpack | Pure JS, no native; DoS limited by size guards |
+| `pdf-lib` | PDF creation | Pure JS |
+| `react-native-blob-util` | Native file upload (Drive) | Active community package |
+| `expo-updates` | OTA updates | Expo maintained; supply chain risk accepted |
+
+### 7.3 Patched packages
+
+- `expo-web-browser+15.0.10.patch` — patched (verify patch content is benign)
+- `expo-keep-awake+15.0.8.patch` — patched (verify)
+
+**Finding — Low / Informational:**
+- **L4. Patch files should be reviewed periodically** to ensure they remain compatible with dependency updates.
+
+---
+
+## 8. Backup & Restore Security
+
+The backup/restore system (`BackupService.ts`) is one of the highest-risk surfaces because it parses **untrusted zip files** from the user's file picker. The implemented controls are strong:
+
+### Create backup
+- Filters documents: only those with `file_uri.startsWith(ARCHIVE_DIR)` are included.
+- Vault name in zip filename is sanitized (same character strip + length cap).
+- Temp zip is written to `cacheDirectory` and deleted in `finally`.
+- Sharing serialized to avoid double-sheet on Android.
+
+### Restore backup
+- **Size gate:** Max 50 MiB zip.
+- **Manifest gate:** Max 2 MiB manifest, validated structure.
+- **Entry limits:** Max 200 categories, 5,000 documents, 20,000 archive files.
+- **Filename validation:** `toSafeFilename` rejects traversal, reserved names, overlong names.
+- **File-type whitelist:** Only `image|pdf|word|excel|document`.
+- **Staging:** Files extracted to `cacheDirectory/restore_stage_…/`, not directly to `archive/`.
+- **Atomic swap:** Old archive → rollback, staged → live; on failure, rollback → live.
+- **DB transaction:** Categories + documents restored in `withTransactionAsync`; rolls back on any error.
+- **Rollback on DB failure:** If transaction fails after archive swap, restores archive from rollback dir.
+- **Cleanup:** `finally` block removes stage and rollback dirs.
+
+### Share-selected-as-zip
+- Only documents with `file_uri.startsWith(ARCHIVE_DIR)` are eligible.
+- Temp zip deleted after sharing.
+
+---
+
+## 9. OCR & Text Extraction
+
+### 9.1 On-device only (`ocrExtract.ts`)
+
+OCR uses `expo-text-extractor` (on-device ML Kit). **No network call.** Text never leaves the device unless the user explicitly shares it (copy, Share to AI).
+
+### 9.2 Trust boundary for pre-extracted OCR (`app-store.ts` → `addDocument`)
+
+When multi-scan passes `preOcrText`, the store checks whether it matches the **internal `pendingOcrText` draft** (same `fileUri`, `fileType`, and text). If it does not match (untrusted input), **free-tier quota is consumed** before persisting. This prevents trial bypass via injected OCR text.
+
+---
+
+## 10. Privacy Controls
+
+| Feature | Implementation |
+|---------|---------------|
+| Privacy onboarding modal | `PrivacyWelcomeModal` shown before first use; completion persisted in `settings` |
+| OCR opt-in | `ocrExtractOnCapture` defaults to `false`; user must enable |
+| Google services privacy copy | `googleServicesPrivacy.ts` shown in Settings and as a one-time tip |
+| AI share disclaimer | `AiOptionalWorkflow.ts` + `AiShareDisclaimerModal` — per-session + persistent dismiss |
+| AI destination privacy note | Shown in `AiDestinationSheet` with "don't show again" option |
+| Quiz/marketing data cleared on Pro | `clearQuizWhyProData()` called after successful purchase/restore/sync |
+| Limited photo access UX | Toast in `capture.tsx` explains partial access is normal |
+
+---
+
+## Current Findings Summary
 
 ### Critical
-**No confirmed critical vulnerabilities in this scan.**
+**None.**
+
+### High
+**None.**
 
 ### Medium
-#### M1. Vault data remains unencrypted at rest
-* **Location:** `db/schema.ts`, archive files
-* **Status:** Open (accepted for now)
-* **Risk:** Device compromise or extracted app data can expose vault content.
 
-#### M2. No in-app secondary lock (policy choice)
-* **Location:** App policy/runtime
-* **Status:** Open (intentional product decision)
-* **Risk:** If device is already unlocked, vault content is directly accessible.
+| ID | Finding | Status |
+|----|---------|--------|
+| M1 | Vault data unencrypted at rest (SQLite + files) | Open — accepted; relies on Android FBE |
+| M2 | No in-app secondary lock / biometric gate | Open — intentional product decision |
 
 ### Low / Informational
-#### L1. RevenueCat `goog_` key is public SDK key
-* **Location:** `app.json`, `config/revenueCat.ts`
-* **Status:** Low operational hygiene item.
 
-#### L2. Dependencies
-* **Evidence:** `npm audit --omit=dev` reports `0` vulnerabilities.
-* **Status:** Healthy.
-
-#### L3. Limited vs full photo library (informational)
-* **Location:** OS permission model + `services/photoAccessMode.ts`, `app/capture.tsx`
-* **Status:** Documented / UX mitigated (toast when access is **limited**).
-* **Note:** Partial library grants are a **platform feature**, not a vault defect; data exposure is bounded by user selection in the system UI.
+| ID | Finding | Status |
+|----|---------|--------|
+| L1 | RevenueCat `goog_` key is a public SDK key (not a secret) | Informational |
+| L2 | OTA update supply-chain risk (Expo Updates) | Accepted; mitigated by 2FA + runtime version |
+| L3 | Legacy `READ/WRITE_EXTERNAL_STORAGE` in merged manifest | **Fixed** — removed via `tools:node="remove"` |
+| L4 | Patch files (`patches/`) should be periodically reviewed | Operational hygiene |
+| L5 | `android:allowBackup="true"` in manifest | **Fixed** — set to `false` in `app.json` |
+| L6 | `SYSTEM_ALERT_WINDOW` appears in dev manifest | **Fixed** — removed via `tools:node="remove"` |
+| L7 | AI workflow is an intentional egress trust boundary (user must confirm) | By design |
+| L8 | Quiz/marketing preferences in SQLite (low-sensitivity; cleared on Pro) | Informational |
+| L9 | Photo access mode cache (~5s TTL) may show briefly stale UX | Informational |
 
 ---
 
-## Security scan: newly added features (2026-04-13)
+## Hardening Already Implemented
 
-**Sources:** `Plan.md/PROGRESS.md` (§5c Pro/quiz/dev preview, §5d Android photos + limited library, §5b / §7 optimization notes, §8 AI workflow), `Plan.md/OPTIMIZATIONS.md` (bulk `skipReload`, batched settings, tag/OCR batching, backup progress throttle, photo access cache, zip/streaming work).  
-**Method:** Targeted review of the code paths those features touch (not a full repo re-audit).
+These controls were added in prior hardening passes and verified during this scan:
 
-### Scope (what was reviewed)
+1. **Office preview DoS limits** — file size, zip entry, XML part, and text caps in `offlinePreview.ts`
+2. **Drive token fail-closed** — SQLite fallback only in `__DEV__`/Expo Go; production throws if Keystore missing
+3. **Backup restore staging + rollback** — files go through staging directory before archive swap
+4. **URI allowlist for file preview** — `isAllowedArchiveFileUri` in `file-preview.tsx`
+5. **Removed broad storage permissions** — `app.json` only declares `CAMERA` + `BILLING`
+6. **Share URI validation** — `isAllowedShareSourceUri` applied at every `Sharing.shareAsync` call site
+7. **Drive upload sandbox gate** — `uploadLocalFileToVaultFolder` rejects non-sandbox paths
+8. **Drive upload serialization** — `driveDocumentUploadQueue` prevents burst uploads
+9. **HTML escape in PDF** — `escapeHtml()` on all interpolated fields
+10. **Filename sanitization** — `StorageService`, `BackupService`, `GoogleDriveSync` all strip dangerous chars
+11. **FTS5 expression sanitization** — special characters stripped before MATCH
+12. **LIKE escape** — `%`, `_`, `\` properly escaped in search
+13. **OCR trust boundary** — untrusted `preOcrText` consumes free quota
+14. **`RECORD_AUDIO` removed** from manifest
+15. **Backup zip temp cleanup** — `finally` block in `createBackup`
+16. **Legacy permissions stripped** — `READ/WRITE_EXTERNAL_STORAGE` + `SYSTEM_ALERT_WINDOW` removed via expanded config plugin
+17. **`android:allowBackup` disabled** — prevents ADB data extraction
+18. **Notification lock-screen privacy** — channel set to `VISIBILITY_PRIVATE`; doc title truncated to 60 chars
 
-| Area | Representative files / behavior |
-|------|-----------------------------------|
-| Pro billing vs dev preview + quiz | `store/app-store.ts`, `services/quizWhyProStorage.ts`, `components/ui/QuizWhyPro.tsx` |
-| Google Drive gating with store `isPro` | `services/GoogleDriveSync.ts` |
-| Android photo permissions + limited library UX | `services/androidPhotoPermission.ts`, `services/requiredPermissions.ts`, `services/photoAccessMode.ts`, `app/capture.tsx`, `app/permissions-info.tsx` |
-| Bulk ops / perf refactors | `skipReload` on `addDocument` / `editDocument` / `removeDocument`, `db/settings.ts` `getSettings`, `db/tags.ts` `addTagToDocuments`, `store/app-store.ts` `consumeOcrReadTrials` |
-| Backup progress + streaming-style zip | `services/BackupService.ts`, `services/backupProgressThrottle.ts`, `components/ui/BackupProgressModal.tsx` |
-| AI “Share to AI” workflow | `components/ui/UseAiWorkflowSheet.tsx`, `components/ui/AiDestinationSheet.tsx`, `components/ui/PromptTemplateSheet.tsx`, `services/AiDestinations.ts` |
+---
 
-### Findings
+## Recommendations (Next Priorities)
 
-#### Critical
-**None identified** in these surfaces.
-
-#### High
-**None identified** beyond controls already documented in **Implemented Fixes** (Drive token fail-closed, backup staging, preview URI allowlist, Office preview limits).
-
-#### Medium / operational
-1. **AI workflow — intentional third-party trust boundary**  
-   * **Behavior:** User chooses an AI destination; the app may open a fixed deep link (`services/AiDestinations.ts`) and/or the system share sheet with `fileUri`.  
-   * **Risk:** Vault content **leaves the device** to apps the user selects; this is **by design**, not a bypass of vault isolation.  
-   * **Mitigation in product:** Privacy copy + optional “don’t show again” in `AiDestinationSheet`; user must confirm flow.  
-   * **Code mitigations (2026-04-13):** **`isAllowedShareSourceUri`** in **`AiDestinationSheet`** (and other share entry points) blocks non-sandbox / unexpected URIs before **`Sharing.shareAsync`** (see **M5**).
-
-2. **Quiz + marketing prefs in SQLite**  
-   * **Behavior:** `quizWhyProStorage.ts` stores low-sensitivity enum-like answers under `settings`; **cleared on Pro** via `clearQuizWhyProData()`.  
-   * **Risk:** Low (preferences only); same at-rest model as rest of `settings`. **No change required** for this threat model.
-
-#### Low / informational
-1. **Parameterized batch SQL** — `getSettings(keys[])` and `addTagToDocuments` use bound parameters; keys for `getSettings` are **app-controlled** literals from `loadSettings`, not user input.  
-2. **`skipReload`** — Reduces list reload churn only; **does not** skip entitlement checks inside `addDocument` / limits logic.  
-3. **Photo access mode cache** (`photoAccessMode.ts`, ~5s TTL) — In-memory only; at most slightly stale UX, not a confidentiality issue.  
-4. **`backupProgressThrottle.ts`** — Throttles UI updates; no sensitive data.  
-5. **Android photo permission alignment** (`androidPhotoPermission.ts`) — Uses API-appropriate read permission; consistent with scoped storage posture.
-
-### What already looks sound
-
-- **Bulk tag:** Single `INSERT OR IGNORE` with placeholders — no string-built SQL from user content.  
-- **OCR trial batching:** Persists counters via existing settings path; reuses quota / trust-boundary logic for `preOcrText` in `addDocument`.  
-- **Deep links for AI:** Static allowlist in code, not constructed from user input.
-
-### Residual watchlist (not blocking)
-
-- **Bulk import + Drive:** Large multi-imports still enqueue **one upload after another** (serialized) when auto-upload is on; each file must pass **archive + sandbox** checks (**M6**). Residual risk is intentional cloud backup of user content to Google.  
-- **AI share:** **`document.file_uri`** remains the primary input; **M5** adds fail-closed checks before sharing even if a URI were inconsistent with `StorageService` expectations.
+1. **Evaluate encrypted-at-rest storage** — SQLCipher for the database, or file-level encryption for the archive, if the threat model includes physical device compromise beyond Android FBE.
+2. **Consider optional in-app lock** — biometric/PIN gate for users who want a second factor beyond OS lock screen.
+3. **Dependency update cadence** — Run `npm audit` and review `patches/` on a regular schedule (monthly or per-release).
+4. **Certificate pinning** — For Google Drive API calls, certificate pinning would add defense against MITM on corporate/proxy networks. Low priority given TLS + Google's cert infrastructure.
 
 ---
 
 ## Verification Notes
 
-- `ReadLints` reported no lint errors in edited files.
-- Full `npm run lint` still fails due pre-existing unrelated errors in other files (for example `app/(drawer)/index.tsx`), not from these security patches.
-
----
-
-## Next Security Priorities
-
-1. Evaluate encrypted-at-rest storage for database/files if threat model requires stronger local data protection.
-2. Keep OS-level lock guidance prominent or add optional in-app lock mode for high-sensitivity users.
+- Every `.ts` / `.tsx` file under `services/`, `store/`, `db/`, `config/`, `app/`, and key `components/` was read in full.
+- `npm audit --omit=dev` returns **0 vulnerabilities** (2026-04-18).
+- No linter errors on security-touched files.
+- Merged `AndroidManifest.xml` reviewed at 55 lines.
+- `app.json` (114 lines), `app.config.ts`, `eas.json`, `.env.example`, and `.gitignore` reviewed.

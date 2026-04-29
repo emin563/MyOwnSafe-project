@@ -7,11 +7,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentComponentProps } from '@react-navigation/drawer';
 import { router } from 'expo-router';
 import React, { useCallback, useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useShallow } from 'zustand/react/shallow';
 
 // Limits enforced in the store; UI just shows the same Limit dialog.
+
+const CATEGORY_ORDER_HINT_TITLE = 'Categories';
+const CATEGORY_ORDER_HINT_MESSAGE =
+  'You can list your categories in alphabetical order.\n\nExample:\nA) Warranties\nB) Exams';
 
 const CATEGORY_ICONS = [
   'folder-outline',
@@ -271,28 +275,34 @@ export function CustomDrawerContent(props: DrawerContentComponentProps) {
             <Ionicons name="document-attach-outline" size={16} color={Colors.textSecondary} />
             <Text style={styles.newButtonText}>Add file</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.newButton,
-            ]}
-            onPress={() => {
-              setAddModalVisible(true);
-            }}
-            activeOpacity={0.7}
-          >
-            <Ionicons
-              name="folder-open-outline"
-              size={16}
-              color={Colors.textSecondary}
-            />
-            <Text
-              style={[
-                styles.newButtonText,
-              ]}
+          <View style={styles.newCategoryRow}>
+            <TouchableOpacity
+              style={[styles.newButton, styles.newCategoryMain]}
+              onPress={() => {
+                setAddModalVisible(true);
+              }}
+              activeOpacity={0.7}
             >
-              New category
-            </Text>
-          </TouchableOpacity>
+              <Ionicons
+                name="folder-open-outline"
+                size={16}
+                color={Colors.textSecondary}
+              />
+              <Text style={styles.newButtonText}>New category</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.categoryHintBox}
+              onPress={() =>
+                Alert.alert(CATEGORY_ORDER_HINT_TITLE, CATEGORY_ORDER_HINT_MESSAGE)
+              }
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Tip: list categories in alphabetical order"
+            >
+              <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
+              <Text style={styles.categoryHintBoxText}>Tip</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.divider} />
@@ -485,6 +495,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.base,
     paddingVertical: Spacing.xs,
     gap: Spacing.xs,
+  },
+  newCategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: Spacing.sm,
+  },
+  newCategoryMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  categoryHintBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surfaceRaised,
+  },
+  categoryHintBoxText: {
+    color: Colors.primary,
+    fontSize: Typography.fontSizeSm,
+    fontWeight: Typography.fontWeightSemibold,
   },
   newButton: {
     flexDirection: 'row',
