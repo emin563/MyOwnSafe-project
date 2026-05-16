@@ -83,5 +83,5 @@ npx expo run:ios
 ---
 
 <p align="center">
-  Made with ❤️ by <b>Gundogdu</b>
+  Made with ❤️ by <b>Emin</b>
 </p>
