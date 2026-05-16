@@ -1,50 +1,88 @@
-# Welcome to your Expo app 👋
+<div align="center">
+  <img src="./assets/images/banner.png" alt="Vault Banner" width="100%" />
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+  # Vault - Document Archive
+  **A secure, privacy-first digital vault for your most important documents.**
 
-## Get started
+  [![Expo](https://img.shields.io/badge/Expo-54.0-000020?logo=expo&logoColor=white)](https://expo.dev)
+  [![React Native](https://img.shields.io/badge/React_Native-0.81.5-61DAFB?logo=react&logoColor=black)](https://reactnative.dev)
+  [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20iOS-green)](https://expo.dev)
+  [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+</div>
 
-1. Install dependencies
+## 🌟 Overview
 
+Vault is a powerful document management application designed for high security and offline privacy. It allows users to scan, archive, and manage documents, receipts, and warranties with ease. Everything is stored locally on your device, ensuring your data never leaves your control.
+
+## ✨ Key Features
+
+- **📸 High-Performance Scanner**: Capture crisp document scans using advanced ML Kit processing.
+- **🔍 OCR Extraction**: Automatically extract text from scanned documents for easy indexing.
+- **📄 PDF Management**: Generate, view, and organize PDFs within the app.
+- **🔐 App Locking**: Secure your archive with biometric or pin-based app locking.
+- **🏷️ Global Tagging**: Organize your archive with a color-coded tag management system.
+- **🛡️ Privacy-First**: Completely offline operation—your documents stay on your device.
+- **🔔 Expiry Notifications**: Never miss a warranty or document expiry with intelligent alerts.
+
+## 🛠️ Technical Stack
+
+- **Framework**: [Expo](https://expo.dev/) (SDK 54) & [React Native](https://reactnative.dev/)
+- **State Management**: [Zustand](https://github.com/pmndrs/zustand)
+- **Database**: [expo-sqlite](https://docs.expo.dev/versions/latest/sdk/sqlite/)
+- **Storage**: [expo-secure-store](https://docs.expo.dev/versions/latest/sdk/secure-store/)
+- **Navigation**: [Expo Router](https://docs.expo.dev/router/introduction/) (File-based routing)
+- **Native Modules**: 
+  - `react-native-worklets` for high-performance background tasks.
+  - `expo-camera` for document capture.
+  - `react-native-pdf` for seamless viewing.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) (LTS)
+- [Expo Go](https://expo.dev/go) or an Android/iOS Development Build
+- (Windows Users) Ensure your Android SDK is on an ASCII-only path.
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/your-username/vault-document-archive.git
+   cd vault-document-archive
+   ```
+
+2. **Install dependencies**
    ```bash
    npm install
    ```
 
-2. Start the app
-
+3. **Environment Setup**
+   Copy the example environment file and add your keys:
    ```bash
-   npx expo start
+   cp .env.example .env
    ```
 
-In the output, you'll find options to open the app in a
+4. **Start the Development Server**
+   ```bash
+   npm run start
+   ```
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## 🏗️ Development Builds
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
+### Android (Local)
+To build a local development APK:
 ```bash
-npm run reset-project
+npx expo run:android
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### iOS (Local)
+```bash
+npx expo run:ios
+```
 
-## Learn more
+---
 
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+<p align="center">
+  Made with ❤️ by <b>Gundogdu</b>
+</p>
