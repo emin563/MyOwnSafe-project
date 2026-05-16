@@ -1,5 +1,4 @@
-<div align="center">
-  <img src="./assets/images/banner.png" alt="Vault Banner" width="100%" />
+
 
   # Vault - Document Archive
   **A secure, privacy-first digital vault for your most important documents.**
