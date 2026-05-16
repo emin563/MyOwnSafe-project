@@ -1,0 +1,7 @@
+This folder was exported for GitHub-safe sharing.
+
+app.json uses PLACEHOLDER values (OAuth schemes, Android package name, EAS projectId, Expo updates URL). Replace before real builds or use your own Expo project.
+
+Excluded on purpose: .env*, credentials, node_modules, .expo, android/, ios/, .cursor/, .vscode/settings.json.
+
+See .env.example for variables your local setup needs.

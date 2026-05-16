@@ -1,14 +1,14 @@
 {
   "expo": {
     "name": "Vault - Document Archive",
-    "slug": "PromptBlueprint",
+    "slug": "promptblueprint-opensource-demo",
     "version": "1.5.1",
     "orientation": "portrait",
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/272a3754-8793-4c10-980a-5e6ae967a076"
+      "url": "https://u.expo.dev/00000000-0000-0000-0000-000000000001"
     },
     "icon": "./assets/images/icon.png",
     "scheme": "promptblueprint",
@@ -23,7 +23,7 @@
       }
     },
     "android": {
-      "versionCode": 25,
+      "versionCode": 1,
       "blockedPermissions": [
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
@@ -36,10 +36,10 @@
           "action": "VIEW",
           "data": [
             {
-              "scheme": "com.gundogdu.myownsafe"
+              "scheme": "com.example.vault"
             },
             {
-              "scheme": "com.googleusercontent.apps.655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn"
+              "scheme": "com.googleusercontent.apps.YOUR_ANDROID_OAUTH_CLIENT_ID"
             }
           ],
           "category": ["BROWSABLE", "DEFAULT"]
@@ -56,7 +56,7 @@
         "android.permission.CAMERA",
         "com.android.vending.BILLING"
       ],
-      "package": "com.gundogdu.myownsafe"
+      "package": "com.example.vault"
     },
     "web": {
       "output": "static",
@@ -103,8 +103,7 @@
       ],
       "expo-secure-store",
       "./plugins/withAndroidGoogleDriveOAuthIntent",
-      "./plugins/withAndroidRemoveBroadMediaPermissions",
-      "./plugins/withAndroidSecurityHardening"
+      "./plugins/withAndroidRemoveBroadMediaPermissions"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -113,10 +112,10 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "272a3754-8793-4c10-980a-5e6ae967a076"
+        "projectId": "00000000-0000-0000-0000-000000000001"
       },
       "googleDriveOAuth": {
-        "androidClientId": "655562571949-piv74f9gp1tp91m7et3ftv502pl9kuhn.apps.googleusercontent.com",
+        "androidClientId": "YOUR_ANDROID_CLIENT_ID.apps.googleusercontent.com",
         "webClientId": ""
       }
     }

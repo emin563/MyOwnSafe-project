@@ -1,7 +1,7 @@
 {
   "name": "promptblueprint",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "1.5.1",
   "scripts": {
     "postinstall": "patch-package",
     "start": "expo start",
@@ -96,6 +96,11 @@
     "eslint-config-expo": "~10.0.0",
     "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "^0.9.10",
+    "fast-uri": "^3.1.2",
+    "postcss": "^8.5.10"
   },
   "private": true
 }
